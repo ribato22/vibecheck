@@ -126,12 +126,12 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { fetch-depth: 0 }   # full history, so .env files committed in the past are caught
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { repository: ribato22/vibecheck, path: .vibecheck-tool }
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
       - run: node .vibecheck-tool/skills/check/scripts/scan.mjs . --fail-on critical
 ```
 
