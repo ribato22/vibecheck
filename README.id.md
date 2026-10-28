@@ -127,6 +127,8 @@ Alat keamanan tidak boleh jadi sumber masalah keamanan.
 - **Secret selalu disamarkan** (`sk-p…9xQz`) di output, laporan dan pesan guard.
 - **Guard bersifat fail-open.** Kalau guard error, pekerjaanmu tetap jalan.
 
+Menemukan celah keamanan di vibecheck sendiri? Laporkan secara privat, lihat [SECURITY.md](SECURITY.md).
+
 ## FAQ
 
 **Apakah ini pengganti penetration test?**

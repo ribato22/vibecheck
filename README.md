@@ -156,6 +156,8 @@ A security tool should never be the security problem.
 - **Secrets are always masked** (`sk-p…9xQz`) in output, reports and guard messages.
 - **The guard fails open.** If it crashes, your work continues.
 
+Found a vulnerability in vibecheck itself? Please report it privately: see [SECURITY.md](SECURITY.md).
+
 ## FAQ
 
 **Does this replace a penetration test?**
