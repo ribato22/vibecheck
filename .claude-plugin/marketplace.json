@@ -1,0 +1,15 @@
+{
+  "name": "vibecheck",
+  "description": "vibecheck: ship your vibe-coded app without leaking your users' data or your wallet.",
+  "owner": {
+    "name": "ribato22"
+  },
+  "plugins": [
+    {
+      "name": "vibecheck",
+      "source": "./",
+      "description": "Launch audit (score + GO/NO-GO), guided fixes, secret guard hook, and an unstuck protocol for AI fix loops.",
+      "category": "security"
+    }
+  ]
+}
