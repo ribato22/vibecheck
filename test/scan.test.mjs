@@ -255,3 +255,29 @@ test('--json still has a ceiling and reports the overflow per file', () => {
     removeProject(dir);
   }
 });
+
+test('files in skipped folders that app code imports are checked like app code', () => {
+  const dir = makeProject({
+    'api-v1.mjs': "import { parseYaml } from './handoff/qa-scripts/openapi/yaml.mjs';\nexport const load = (s) => parseYaml(s);\n",
+    'handoff/qa-scripts/openapi/yaml.mjs': "import { lex } from './lexer.mjs';\nexport const parseYaml = (s) => lex(s);\n",
+    'handoff/qa-scripts/openapi/lexer.mjs': 'export const lex = (src) => eval(src);\n',
+    'handoff/qa-scripts/browser/qa-batch3.js': 'eval(y);\n',
+    'src/app.ts': "import { h } from '../old/legacy.js';\nexport default h;\n",
+    'old/legacy.ts': 'export const h = (el, x) => { el.innerHTML = x; };\n',
+    'src/cjs.js': "const helper = require('./backup-v1/helper');\nmodule.exports = helper;\n",
+    'src/backup-v1/helper/index.js': "const { execSync } = require('child_process');\nmodule.exports = (dir) => execSync(`ls ${dir}`);\n",
+  });
+  try {
+    const report = scan(dir);
+    const code = report.findings.filter((f) => f.file && f.category !== 'secrets').map((f) => `${f.id} ${f.file}`).sort();
+    assert.deepEqual(code, [
+      'VC-INJ-CMD src/backup-v1/helper/index.js',
+      'VC-INJ-EVAL handoff/qa-scripts/openapi/lexer.mjs',
+      'VC-XSS-HTML old/legacy.ts',
+    ], 'imported helpers (even transitively) are checked; the unused QA script is not');
+    assert.ok(report.notes.includes('4 files in test/backup/QA folders are imported by app code, so they were checked like app code: handoff/qa-scripts/openapi/lexer.mjs, handoff/qa-scripts/openapi/yaml.mjs, old/legacy.ts, src/backup-v1/helper/index.js.'), JSON.stringify(report.notes));
+    assert.ok(report.notes.some((n) => n.startsWith('Code patterns not checked in 1 test/backup/QA files') && n.includes('handoff/qa-scripts/browser/')));
+  } finally {
+    removeProject(dir);
+  }
+});

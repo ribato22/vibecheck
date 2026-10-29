@@ -48,7 +48,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/scan.mjs" "<path>" --json
 
 The scanner returns leads with `confidence: "high"` (precise patterns, such as a real key format) or `"verify"` (a hypothesis). Open the file for every lead and confirm or reject it. It also returns the detected `stack`.
 
-Read `notes` and `hidden` too. `hidden` lists, per rule and file, matches beyond the scanner's limit: check those files as well, and don't call a rule fully covered until you have. `notes` names the test, backup and QA folders whose code wasn't pattern-checked: if any of them actually ship to users, check them by hand.
+Read `notes` and `hidden` too. `hidden` lists, per rule and file, matches beyond the scanner's limit: check those files as well, and don't call a rule fully covered until you have. `notes` names the test, backup and QA folders whose code wasn't pattern-checked. Files there that app code imports through relative paths are checked anyway, and `notes` lists them. Imports through path aliases (like `@/`) aren't followed, so if a skipped file reaches users some other way, check it by hand.
 
 ## Step 3: Load what applies
 

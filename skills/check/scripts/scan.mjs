@@ -8,14 +8,14 @@
 // --strict  makes --fail-on count "verify" leads too.
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join, relative, basename, extname, resolve, sep } from 'node:path';
+import { join, relative, basename, extname, resolve, sep, posix } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   SEVERITIES, SEVERITY_RANK, CODE_RULES, PUBLIC_ENV_RE,
   findSecrets, mask, redact, classifyEnvName,
 } from './rules.mjs';
 
-const VERSION = '1.0.2';
+const VERSION = '1.0.3';
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILES = 20000;
 const MAX_PER_RULE = { text: 25, json: 200 }; // agents read --json and need the full picture
@@ -248,6 +248,44 @@ function isLikelyClient(rel, content) {
   return spa && /(?:^|\/)src\//.test(rel);
 }
 
+// A file under test/backup/QA folders still ships when app code imports it (say, a shared helper kept in
+// qa-scripts/). Follow relative imports from app code, transitively, and check those files like app code.
+const IMPORT_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`](\.{1,2}\/[^"'`\n]+)["'`]/g;
+const RESOLVE_EXT = ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.mts', '.cts', '.vue', '.svelte'];
+
+function resolveImport(from, spec) {
+  const base = posix.normalize(posix.join(posix.dirname(from), spec));
+  const stems = [base];
+  if (/\.[cm]?js$/.test(base)) stems.push(base.replace(/\.([cm]?)js$/, '.$1ts'), base.replace(/\.js$/, '.tsx')); // TS: './x.js' is x.ts
+  for (const stem of stems) {
+    for (const ext of RESOLVE_EXT) if (fileSet.has(stem + ext)) return stem + ext;
+    for (const ext of RESOLVE_EXT.slice(1)) if (fileSet.has(`${stem}/index${ext}`)) return `${stem}/index${ext}`;
+  }
+  return null;
+}
+
+function findImportedNonShipping() {
+  const imported = new Set();
+  const queue = files.filter((rel) => langOf(rel) === 'js' && !isNonShipping(rel));
+  const visited = new Set(queue);
+  while (queue.length) {
+    const rel = queue.pop();
+    let st;
+    try { st = statSync(join(root, rel)); } catch { continue; }
+    if (!st.isFile() || st.size > MAX_FILE_BYTES) continue;
+    for (const m of (readText(rel) || '').matchAll(IMPORT_RE)) {
+      const target = resolveImport(rel, m[1]);
+      if (!target || visited.has(target)) continue;
+      visited.add(target);
+      if (isNonShipping(target)) imported.add(target);
+      queue.push(target);
+    }
+  }
+  return imported;
+}
+
+const shippedAnyway = findImportedNonShipping();
+
 // ---------------------------------------------------------------------------
 // 2. Per-file checks
 // ---------------------------------------------------------------------------
@@ -322,7 +360,7 @@ for (const rel of files) {
   for (const [k, re] of Object.entries(SIGNAL_RE)) if (!signals[k] && re.test(content)) signals[k] = true;
 
   const rulesFile = /(?:^|\/)(?:[\w.-]+\.rules|database\.rules\.json)$/.test(rel);
-  if ((lang || ext === '.sql' || rulesFile) && isNonShipping(rel)) {
+  if ((lang || ext === '.sql' || rulesFile) && isNonShipping(rel) && !shippedAnyway.has(rel)) {
     const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/') + 1) : './';
     skippedDirs.set(dir, (skippedDirs.get(dir) || 0) + 1);
     continue;
@@ -604,7 +642,11 @@ for (const [id, files] of hidden) {
 if (skippedDirs.size) {
   const total = [...skippedDirs.values()].reduce((a, b) => a + b, 0);
   const dirs = [...skippedDirs.keys()].sort();
-  notes.push(`Code patterns not checked in ${total} test/backup/QA files (secrets were): ${dirs.slice(0, 8).join(', ')}${dirs.length > 8 ? ` and ${dirs.length - 8} more` : ''}. If any of these ship to users, audit them by hand.`);
+  notes.push(`Code patterns not checked in ${total} test/backup/QA files (secrets were): ${dirs.slice(0, 8).join(', ')}${dirs.length > 8 ? ` and ${dirs.length - 8} more` : ''}. Imports through path aliases (like @/) aren't followed, so if any of these ship to users, check them by hand.`);
+}
+if (shippedAnyway.size) {
+  const list = [...shippedAnyway].sort();
+  notes.push(`${list.length} files in test/backup/QA folders are imported by app code, so they were checked like app code: ${list.slice(0, 8).join(', ')}${list.length > 8 ? ` and ${list.length - 8} more` : ''}.`);
 }
 
 const counts = Object.fromEntries(SEVERITIES.map((s) => [s, findings.filter((f) => f.severity === s).length]));

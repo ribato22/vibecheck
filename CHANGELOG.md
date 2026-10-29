@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.3 (2026-10-29)
+
+- **Skipped folders no longer hide code that ships.** A file under a test, backup or QA folder is checked like app code when app code imports it, directly or through other imports (`import`, `export … from`, `import()`, `require()`, including `./x.js` → `x.ts` and folder `index` files). In a real audit, two OpenAPI helpers kept in `qa-scripts/` were used at runtime and had been skipped.
+- `notes` lists those files. Imports through path aliases (like `@/`) aren't followed yet, and the note says so.
+
 ## 1.0.2 (2026-10-29)
 
 - **Agents see every match.** `--json` now returns up to 200 matches per rule (was 25). In a real audit, the old limit was used up by one noisy folder and hid the app's own code.
