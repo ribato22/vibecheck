@@ -1,7 +1,8 @@
 // vibecheck-ignore-file
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { keys, makeProject, removeProject, git, scan, ids } from './helpers.mjs';
+import { spawnSync } from 'node:child_process';
+import { keys, makeProject, removeProject, git, scan, ids, SCAN } from './helpers.mjs';
 
 const vulnerableNextApp = () => ({
   'package.json': JSON.stringify({
@@ -223,6 +224,33 @@ test('test files skip the generic secret guess but not real key formats', () => 
   try {
     const found = scan(dir).findings.filter((f) => f.category === 'secrets').map((f) => `${f.id} ${f.file}`);
     assert.deepEqual(found.sort(), ['VC-KEY-ANTHROPIC test/contract.test.mjs', 'VC-KEY-GENERIC src/config.js'].sort());
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('agents get every match in --json; the text view caps per rule and says where the rest are', () => {
+  const xss = (n) => 'el.innerHTML = x;\n'.repeat(n);
+  const dir = makeProject({ 'a.js': xss(30), 'b.js': xss(5) });
+  try {
+    const report = scan(dir);
+    assert.equal(report.findings.filter((f) => f.id === 'VC-XSS-HTML').length, 35);
+    assert.deepEqual(report.hidden, {});
+
+    const text = spawnSync(process.execPath, [SCAN, dir], { encoding: 'utf8' }).stdout;
+    assert.match(text, /VC-XSS-HTML: 10 more matches not shown, in a\.js \(5\), b\.js \(5\)\./);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('--json still has a ceiling and reports the overflow per file', () => {
+  const dir = makeProject({ 'big.js': 'el.innerHTML = x;\n'.repeat(210) });
+  try {
+    const report = scan(dir);
+    assert.equal(report.findings.filter((f) => f.id === 'VC-XSS-HTML').length, 200);
+    assert.deepEqual(report.hidden, { 'VC-XSS-HTML': { 'big.js': 10 } });
+    assert.ok(report.notes.some((n) => n.startsWith('VC-XSS-HTML: 10 more matches not shown, in big.js (10).')));
   } finally {
     removeProject(dir);
   }

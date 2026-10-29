@@ -15,10 +15,10 @@ import {
   findSecrets, mask, redact, classifyEnvName,
 } from './rules.mjs';
 
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILES = 20000;
-const MAX_PER_RULE = 25;
+const MAX_PER_RULE = { text: 25, json: 200 }; // agents read --json and need the full picture
 
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'out', '.next', '.nuxt', '.svelte-kit', '.output', '.vercel',
@@ -130,6 +130,7 @@ const snippet = (line) => redact(line.trim()).slice(0, 140);
 
 const findings = [];
 const perRule = new Map();
+const hidden = new Map(); // rule id -> Map(file -> matches not shown)
 const seen = new Set();
 
 function add(f) {
@@ -138,7 +139,13 @@ function add(f) {
   seen.add(key);
   const n = (perRule.get(f.id) || 0) + 1;
   perRule.set(f.id, n);
-  if (n > MAX_PER_RULE) return;
+  if (n > MAX_PER_RULE[opts.json ? 'json' : 'text']) {
+    const files = hidden.get(f.id) || new Map();
+    const where = f.file || '(project)';
+    files.set(where, (files.get(where) || 0) + 1);
+    hidden.set(f.id, files);
+    return;
+  }
   findings.push({ confidence: 'high', file: null, line: null, evidence: null, fix: null, ...f });
 }
 
@@ -587,7 +594,13 @@ if (isApp) {
 findings.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
   (a.confidence === 'high' ? -1 : 1) - (b.confidence === 'high' ? -1 : 1) || String(a.file).localeCompare(String(b.file)));
 
-for (const [id, n] of perRule) if (n > MAX_PER_RULE) notes.push(`${id}: ${n - MAX_PER_RULE} more matches not shown.`);
+for (const [id, files] of hidden) {
+  const total = [...files.values()].reduce((a, b) => a + b, 0);
+  const byCount = [...files].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const list = byCount.slice(0, 8).map(([file, n]) => `${file} (${n})`).join(', ');
+  const more = byCount.length > 8 ? ` and ${byCount.length - 8} more files` : '';
+  notes.push(`${id}: ${total} more matches not shown, in ${list}${more}. Check those files before treating this rule as fully covered.`);
+}
 if (skippedDirs.size) {
   const total = [...skippedDirs.values()].reduce((a, b) => a + b, 0);
   const dirs = [...skippedDirs.keys()].sort();
@@ -598,6 +611,7 @@ const counts = Object.fromEntries(SEVERITIES.map((s) => [s, findings.filter((f) 
 const report = {
   tool: 'vibecheck-scan', version: VERSION, root, git: isGit, stack: [...stack].sort(),
   files_scanned: scanned, counts, findings, notes,
+  hidden: Object.fromEntries([...hidden].map(([id, files]) => [id, Object.fromEntries(files)])),
 };
 
 if (opts.json) {

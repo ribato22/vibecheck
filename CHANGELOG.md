@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2 (2026-10-29)
+
+- **Agents see every match.** `--json` now returns up to 200 matches per rule (was 25). In a real audit, the old limit was used up by one noisy folder and hid the app's own code.
+- **Overflow is reported per file**, in `notes` and in a new `hidden` field (`{ rule: { file: count } }`), so the agent knows exactly which files still need a look. The text view for humans still shows 25 per rule.
+- The audit skill tells the agent to check `hidden` files and skipped folders before calling a rule fully covered.
+
 ## 1.0.1 (2026-10-29)
 
 Fixes from the first real-world audit outside Claude Code (Codex, on a local Node.js app).
