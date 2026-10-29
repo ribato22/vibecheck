@@ -82,7 +82,7 @@ Salin folder di dalam `skills/` ke `~/.claude/skills/` (atau folder skill agent-
 | `/vibecheck:fix` | Perbaiki yang kritis lalu yang tinggi, satu per satu, dengan skor sebelum → sesudah |
 | `/vibecheck:fix VC-DB-NO-RLS` | Perbaiki satu temuan tertentu |
 | `/vibecheck:deploy` | Apakah akan jalan di production? Env var vs hosting, URL localhost, import peka huruf besar-kecil, port, penyimpanan serverless, plus checklist hosting → `.vibecheck/deploy.md` |
-| `/vibecheck:deploy --host vercel` | Sama, dengan pengecekan khusus hosting (vercel, netlify, cloudflare, railway, render, fly, heroku, docker) |
+| `/vibecheck:deploy --host vercel` | Sama, dengan pengecekan khusus hosting (vercel, netlify, cloudflare, railway, render, fly, heroku, docker, atau `local` untuk aplikasi yang hanya jalan di komputermu) |
 | `/vibecheck:unstuck` | Hentikan fix loop: reproduksi bug, cari akar masalah, buang tumpukan perbaikan gagal |
 
 Tidak perlu dihafal. Tanya saja *"aplikasiku sudah siap rilis belum?"*, *"kenapa jalan di laptop tapi rusak di Vercel?"* atau bilang *"masih error, kamu muter-muter terus"*, dan skill yang tepat akan jalan sendiri. Di agent lain, panggil skill-nya dengan nama (`check`, `deploy`, `fix`, `unstuck`).

@@ -4,8 +4,8 @@
 //
 //   node preflight.mjs [path] [--json] [--host <name>] [--host-env <file>]
 //
-// --host      where the app deploys: vercel, netlify, cloudflare, amplify, railway, render, fly, heroku, docker.
-//             Detected from config files when omitted.
+// --host      where the app deploys: vercel, netlify, cloudflare, amplify, railway, render, fly, heroku, docker,
+//             or local (it only runs on this machine). Detected from config files when omitted.
 // --host-env  a file with the env var NAMES set on the host: one per line, or the pasted output of
 //             `vercel env ls production`, `fly secrets list` or `wrangler secret list`.
 
@@ -14,14 +14,14 @@ import { join, relative, basename, extname, resolve, sep, posix } from 'node:pat
 import { spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILES = 20000;
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
 const RANK = Object.fromEntries(SEVERITIES.map((s, i) => [s, i]));
 const SERVERLESS = new Set(['vercel', 'netlify', 'cloudflare', 'amplify']);
 const CONTAINER = new Set(['railway', 'render', 'fly', 'heroku', 'docker']);
-const HOSTS = [...SERVERLESS, ...CONTAINER];
+const HOSTS = [...SERVERLESS, ...CONTAINER, 'local'];
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -162,9 +162,12 @@ else {
 const serverless = [...hosts].some((h) => SERVERLESS.has(h));
 const container = [...hosts].some((h) => CONTAINER.has(h));
 const assignsPort = ['railway', 'render', 'fly', 'heroku'].some((h) => hosts.has(h)); // these pass the port in $PORT
+// The app only runs on this machine: localhost URLs, loopback binds and fixed ports are correct there.
+const localTarget = hosts.has('local');
 
 const ignoredFile = (rel) => (readText(rel) || '').slice(0, 300).includes('vibecheck-ignore-file');
 const shippingCode = files.filter((f) => langOf(f) && !isNonShipping(f) && !ignoredFile(f));
+const isTooling = (rel) => /(?:^|\/)(?:scripts?|tools?|seeds?)\//.test(rel); // dev tooling, not the running app
 
 // ---------------------------------------------------------------------------
 // Findings
@@ -270,7 +273,7 @@ const PROVIDED = /^(?:NODE_ENV|PORT|HOST|HOSTNAME|PWD|HOME|PATH|TZ|CI|DEBUG|NEXT
 const PUBLIC_PREFIX = /^(?:NEXT_PUBLIC_|VITE_|REACT_APP_|EXPO_PUBLIC_|NUXT_PUBLIC_|VUE_APP_|GATSBY_|PUBLIC_)/;
 
 const used = new Map(); // name -> { file, line, fallback }
-for (const rel of shippingCode.filter((f) => !/\.config\.[cm]?[jt]s$/.test(f))) {
+for (const rel of shippingCode.filter((f) => !/\.config\.[cm]?[jt]s$/.test(f) && !isTooling(f))) {
   const text = readText(rel);
   if (!text) continue;
   const starts = lineStarts(text);
@@ -344,7 +347,7 @@ if (needed.length && undocumented.length) {
 // 3. URLs that only work on your machine.
 
 const LOCALHOST_RE = /\b(?:https?|wss?):\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?[^\s"'`)]*/g;
-for (const rel of shippingCode.filter((f) => !isDevConfig(f) && !/(?:^|\/)(?:scripts?|seed|seeds)\//.test(f))) {
+for (const rel of localTarget ? [] : shippingCode.filter((f) => !isDevConfig(f) && !isTooling(f))) {
   const text = readText(rel);
   if (!text) continue;
   const starts = lineStarts(text);
@@ -414,7 +417,7 @@ for (const rel of shippingCode) {
   const portRe = langOf(rel) === 'py'
     ? /\b(?:app|uvicorn)\.run\([^)]*\bport\s*=\s*(\d{2,5})/g
     : /\.listen\(\s*(\d{2,5})\b/g;
-  if (!readsPort && !serverless) {
+  if (!readsPort && !serverless && !localTarget) {
     for (const m of text.matchAll(portRe)) {
       const line = lineAt(starts, m.index);
       if ((lines[line - 1] || '').includes('vibecheck-ignore')) continue;
@@ -486,22 +489,26 @@ if (anyFile(/(?:^|\/)supabase\/migrations\//)) reminders.push('Apply Supabase mi
 if (anyFile(/(?:^|\/)drizzle\.config\.[cm]?[jt]s$/)) reminders.push('Apply Drizzle migrations to the production database: `npx drizzle-kit migrate`.');
 if (anyFile(/(?:^|\/)alembic\.ini$/)) reminders.push('Apply migrations to the production database: `alembic upgrade head`.');
 if (anyFile(/(?:^|\/)manage\.py$/)) reminders.push('Run `python manage.py migrate` against the production database, and set DEBUG=False and ALLOWED_HOSTS.');
-if (hasDep('@supabase/supabase-js', '@supabase/ssr') || anyFile(/(?:^|\/)supabase\/config\.toml$/)) reminders.push('Supabase → Authentication → URL Configuration: set the Site URL and add the production redirect URLs, or logins and magic links send people to localhost.');
-if (hasDep('next-auth', '@auth/core', '@auth/nextjs', 'better-auth')) reminders.push('Auth: set the auth secret and production URL env vars on the host, and add the production callback URL to every OAuth provider (Google, GitHub…).');
-if (hasDep('@clerk/nextjs', '@clerk/clerk-react', '@clerk/express')) reminders.push('Clerk: use the production instance keys and add your domain in the Clerk dashboard.');
-if (hasDep('firebase') || anyFile(/(?:^|\/)firebase\.json$/)) reminders.push('Firebase → Authentication → Settings → Authorized domains: add the production domain.');
-if (hasDep('stripe', '@stripe/stripe-js') || pyReqs.includes('stripe')) reminders.push('Stripe: create a live-mode webhook endpoint for the production URL and set its signing secret on the host. Test-mode keys and webhook secrets do not work in live mode.');
-if (hasDep('midtrans-client', 'xendit-node') || /midtrans|xendit/.test(pyReqs)) reminders.push('Midtrans/Xendit: switch to production keys and set the production notification/callback URL in the dashboard.');
+const deployed = !localTarget; // host-side settings below only matter once the app runs somewhere else
+if (deployed && (hasDep('@supabase/supabase-js', '@supabase/ssr') || anyFile(/(?:^|\/)supabase\/config\.toml$/))) reminders.push('Supabase → Authentication → URL Configuration: set the Site URL and add the production redirect URLs, or logins and magic links send people to localhost.');
+if (deployed && hasDep('next-auth', '@auth/core', '@auth/nextjs', 'better-auth')) reminders.push('Auth: set the auth secret and production URL env vars on the host, and add the production callback URL to every OAuth provider (Google, GitHub…).');
+if (deployed && hasDep('@clerk/nextjs', '@clerk/clerk-react', '@clerk/express')) reminders.push('Clerk: use the production instance keys and add your domain in the Clerk dashboard.');
+if (deployed && (hasDep('firebase') || anyFile(/(?:^|\/)firebase\.json$/))) reminders.push('Firebase → Authentication → Settings → Authorized domains: add the production domain.');
+if (deployed && (hasDep('stripe', '@stripe/stripe-js') || pyReqs.includes('stripe'))) reminders.push('Stripe: create a live-mode webhook endpoint for the production URL and set its signing secret on the host. Test-mode keys and webhook secrets do not work in live mode.');
+if (deployed && (hasDep('midtrans-client', 'xendit-node') || /midtrans|xendit/.test(pyReqs))) reminders.push('Midtrans/Xendit: switch to production keys and set the production notification/callback URL in the dashboard.');
 if (serverless && hasDep('pg', 'postgres', '@prisma/client', 'drizzle-orm') && (hasDep('@supabase/supabase-js') || anyFile(/(?:^|\/)supabase\//))) reminders.push('Serverless + Postgres: connect through a pooler (Supabase: the transaction pooler on port 6543) so functions don\'t run the database out of connections.');
-if (hasDep('cors') || /CORSMiddleware|flask_cors|corsheaders/.test(files.filter((f) => langOf(f) === 'py').map(readText).join('\n'))) reminders.push('CORS: add the production front-end origin to the allowlist.');
-reminders.push('After deploying: open the production logs and click through signup → core feature → payment once.');
+if (deployed && (hasDep('cors') || /CORSMiddleware|flask_cors|corsheaders/.test(files.filter((f) => langOf(f) === 'py').map(readText).join('\n')))) reminders.push('CORS: add the production front-end origin to the allowlist.');
+reminders.push(localTarget
+  ? 'Restart the running app so it loads the current code (in-memory state is lost), check the terminal output, and click through the main flows once. When you zip or copy the app, keep every file it imports and leave out .vibecheck/ and .env files.'
+  : 'After deploying: open the production logs and click through signup → core feature → payment once.');
 
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
 
-if (!hosts.size) notes.push('No hosting config found. Pass --host (vercel, netlify, cloudflare, railway, render, fly, heroku, docker) for host-specific checks.');
-if (!hostNames) notes.push('Env vars were not compared with the host. List the names set on the host (never the values) and pass them with --host-env <file>.');
+if (!hosts.size) notes.push('No hosting config found. Pass --host (vercel, netlify, cloudflare, railway, render, fly, heroku, docker, or local if it only runs on this machine) for host-specific checks.');
+if (localTarget) notes.push('Target is local: localhost URLs, loopback binds and fixed ports were not flagged. Run again with the real host before moving the app anywhere else.');
+else if (!hostNames) notes.push('Env vars were not compared with the host. List the names set on the host (never the values) and pass them with --host-env <file>.');
 
 findings.sort((a, b) => RANK[a.severity] - RANK[b.severity] || String(a.file).localeCompare(String(b.file)));
 const counts = Object.fromEntries(SEVERITIES.map((s) => [s, findings.filter((f) => f.severity === s).length]));

@@ -125,3 +125,43 @@ test('a SQLite package that is listed but never imported is not flagged', () => 
     removeProject(dir);
   }
 });
+
+const localDemo = () => ({
+  'package.json': JSON.stringify({ name: 'demo', engines: { node: '>=22.15' }, scripts: { start: 'node server.mjs' } }),
+  'server.mjs': [
+    "import http from 'node:http';",
+    "import { scale } from './demo-data.mjs';",
+    "const ALLOWED = new Set(['http://localhost:4173', 'http://127.0.0.1:4173']);",
+    'const server = http.createServer((req, res) => res.end(String(scale)));',
+    "server.listen(Number(process.env.PORT) || 4173, '127.0.0.1');",
+  ].join('\n'),
+  'demo-data.mjs': "const parseScale = (v) => Number(v) || 1;\nexport const scale = parseScale(process.env.DEMO_SCALE);\n",
+  'handoff/blueprint/live-study/probe.js': "await fetch('http://localhost:4173/api/health');\n",
+  'handoff/blueprint/live-study/scripts/analyze.mjs': 'const terms = process.env.MASK_TERMS;\nconst stage = process.env.STAGE;\n',
+});
+
+test('--host local: localhost, loopback binds and fixed ports are correct, not findings', () => {
+  const dir = makeProject(localDemo());
+  try {
+    const r = preflight(dir, '--host', 'local');
+    assert.deepEqual(r.hosts, ['local']);
+    assert.deepEqual(r.findings.map((f) => `${f.id} ${f.severity} ${f.evidence}`), ['VC-DEPLOY-ENV-UNDOCUMENTED low DEMO_SCALE']);
+    assert.ok(r.notes.some((n) => n.startsWith('Target is local')));
+    assert.ok(!r.notes.some((n) => n.startsWith('No hosting config') || n.startsWith('Env vars were not compared')));
+    assert.ok(r.reminders.at(-1).startsWith('Restart the running app'));
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('dev tooling folders are not production requirements, whatever the host', () => {
+  const dir = makeProject(localDemo());
+  try {
+    const r = preflight(dir);
+    assert.deepEqual(r.env.used.map((u) => u.name), ['DEMO_SCALE'], 'MASK_TERMS and STAGE live in scripts/');
+    const localhost = r.findings.filter((f) => f.id === 'VC-DEPLOY-LOCALHOST').map((f) => f.file).sort();
+    assert.deepEqual(localhost, ['handoff/blueprint/live-study/probe.js', 'server.mjs', 'server.mjs'], 'without --host local, localhost is still flagged outside tooling folders');
+  } finally {
+    removeProject(dir);
+  }
+});

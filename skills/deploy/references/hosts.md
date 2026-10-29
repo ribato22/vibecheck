@@ -81,6 +81,16 @@ Check the section for the app's host. Items marked ⚙ are also checked by the p
 - Node version in `FROM node:XX` matches local ⚙
 - Logs: `docker logs <container>`, or the platform's log view.
 
+## Local (this machine only)
+
+- The start command is written down (`npm start`, a launcher script) and works from a fresh copy of the folder.
+- The Node version on this machine satisfies `"engines"` ⚙
+- Keep the loopback bind (`127.0.0.1`) and localhost Origin/Host guards: they are what keeps a local app local. Don't loosen them to "make deploy work"; moving to a network or public host is a new deploy target with its own check (and a `/vibecheck:check` for auth).
+- Port conflicts: is something already listening on the port (`lsof -nP -iTCP:<port> -sTCP:LISTEN` on Mac/Linux)? Don't start a second copy on a busy port.
+- A running process keeps the old code until it restarts, and in-memory state is lost on restart.
+- Logs: the terminal that started the app.
+- Copying or zipping the app: keep every file the app imports or reads at runtime, even ones inside handoff/QA folders, and leave out `.vibecheck/`, `.env*` and `node_modules`. Build a fresh archive instead of updating an old one, and check its file list.
+
 ## Python apps
 
 - Pin dependencies in requirements.txt or pyproject.toml, and the Python version (`.python-version` or the host setting).

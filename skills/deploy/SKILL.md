@@ -1,7 +1,7 @@
 ---
 name: deploy
 description: Pre-deploy check for "it works on my machine but breaks in production". Finds env vars missing on the host, hardcoded localhost URLs, imports whose letter case only works on Mac/Windows, packages missing from package.json, servers that ignore $PORT or only listen on localhost inside a container, SQLite and file writes on serverless hosts, Prisma clients that never get generated, and the host-side steps people forget (migrations, auth redirect URLs, live webhooks). Use before a first or big deploy, when a build or deploy fails, when something is "undefined" or broken only in production, or when the user asks if the app is ready to deploy to Vercel, Netlify, Cloudflare, Railway, Render, Fly, Heroku or Docker.
-argument-hint: "[path] [--host vercel|netlify|cloudflare|railway|render|fly|heroku|docker]"
+argument-hint: "[path] [--host vercel|netlify|cloudflare|railway|render|fly|heroku|docker|local]"
 ---
 
 # vibecheck deploy: will it run in production?
@@ -18,6 +18,8 @@ argument-hint: "[path] [--host vercel|netlify|cloudflare|railway|render|fly|hero
 ## Step 1: Where and how does it deploy?
 
 Find the host. The preflight detects `vercel.json`, `netlify.toml`, `wrangler.toml`, `amplify.yml`, `railway.json`, `render.yaml`, `fly.toml`, `Procfile`, a `Dockerfile` and a linked `.vercel/` folder. Many Vercel and Netlify projects have no config file at all, so if nothing is detected, check the README or ask the user. Also find out how it deploys (git push, CLI, Docker image) and, in a monorepo, which folder is the app root on the host.
+
+If the app only ever runs on this machine (a local demo or internal tool started with `npm start`), the host is `local`. Pass `--host local`: localhost URLs, loopback binds and fixed ports are correct there and aren't flagged, and host-dashboard reminders are skipped. The verdict becomes "READY (local only)". If the target later changes, run again with the real host.
 
 ## Step 2: Run the preflight
 
@@ -45,7 +47,7 @@ Save the names to `.vibecheck/host-env.txt`, one per line. Create `.vibecheck/` 
 
 ## Step 4: Verify, then cover what code can't show
 
-- Confirm every finding by reading the code, and drop false positives. Check that a "missing" env var really has no default, and that an undeclared package isn't a framework built-in or a path alias the script didn't know about.
+- Confirm every finding by reading the code, and drop false positives. Check that a "missing" env var really has no default (a default can hide inside a helper, like `parseScale(process.env.SCALE)`), and that an undeclared package isn't a framework built-in or a path alias the script didn't know about. Env vars and URLs in `scripts/`, `tools/` and `seeds/` folders are treated as dev tooling and skipped; if one of those actually runs in production, check it by hand.
 - Read the matching section of [references/hosts.md](references/hosts.md) and check its items.
 - Turn `reminders` into a checklist. Ask the user about each dashboard step you can't verify, such as auth redirect URLs, live webhooks or migrations applied to the production database.
 
@@ -53,7 +55,7 @@ Save the names to `.vibecheck/host-env.txt`, one per line. Create `.vibecheck/` 
 
 - 🛑 **WILL BREAK**: any verified high or critical finding.
 - ⚠️ **FIX FIRST**: verified medium findings.
-- 🚀 **READY TO DEPLOY**: neither. If env vars weren't compared with the host, say "ready once the N env vars below are set on the host".
+- 🚀 **READY TO DEPLOY**: neither. If env vars weren't compared with the host, say "ready once the N env vars below are set on the host". For `--host local`, say "READY (local only)".
 
 Write `.vibecheck/deploy.md`. Rename an existing one to `deploy.prev.md` first, and create `.vibecheck/` with its `.gitignore` if needed. Include:
 1. the verdict, the host, and how it deploys

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1 (2026-10-29)
+
+From the first `/vibecheck:deploy` run on a real app, a local-only Node.js demo. The raw preflight reported 6 high and 1 low, and all 7 had to be corrected by hand.
+
+- **`--host local`** for apps that only run on this machine. Localhost URLs, loopback binds (`127.0.0.1`), localhost Origin guards and fixed ports are correct for that target, so they aren't flagged. Host-dashboard reminders (auth redirect URLs, live webhooks, CORS) are skipped, and the verdict says "READY (local only)".
+- **Dev tooling isn't the running app.** Env vars and localhost URLs in `scripts/`, `tools/` and `seeds/` folders no longer count as production requirements.
+- `references/hosts.md` has a "Local (this machine only)" checklist: start command, port conflicts, restarting to load new code, and zipping the app without dropping runtime files or including `.vibecheck/`.
+
 ## 1.1.0 (2026-10-29)
 
 New skill: **`/vibecheck:deploy`**, a pre-deploy check for "works on my machine, broken in production".

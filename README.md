@@ -90,7 +90,7 @@ Copy the folders in `skills/` into `~/.claude/skills/` (or your agent's skills f
 | `/vibecheck:fix` | Fix criticals, then highs, one at a time, with before → after score |
 | `/vibecheck:fix VC-DB-NO-RLS` | Fix one specific finding |
 | `/vibecheck:deploy` | Will it run in production? Env vars vs the host, localhost URLs, case-sensitive imports, ports, serverless storage, plus the host checklist → `.vibecheck/deploy.md` |
-| `/vibecheck:deploy --host vercel` | Same, with host-specific checks (vercel, netlify, cloudflare, railway, render, fly, heroku, docker) |
+| `/vibecheck:deploy --host vercel` | Same, with host-specific checks (vercel, netlify, cloudflare, railway, render, fly, heroku, docker, or `local` for apps that only run on your machine) |
 | `/vibecheck:unstuck` | Stop the fix loop: reproduce, find the root cause, revert the pile |
 
 You don't have to remember them. Ask *"is my app ready to launch?"*, *"why does it work locally but not on Vercel?"* or say *"it's still broken, you keep going in circles"* and the right skill kicks in. In other agents, call the skill by name (`check`, `deploy`, `fix`, `unstuck`).
