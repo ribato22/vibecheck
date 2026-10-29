@@ -1,13 +1,13 @@
 {
   "name": "vibecheck",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "Pre-launch security & readiness audit for AI-built apps (Claude Code plugin + Agent Skills).",
   "license": "MIT",
   "type": "module",
   "engines": { "node": ">=18" },
   "scripts": {
-    "test": "node --test test/scan.test.mjs test/guard.test.mjs",
+    "test": "node --test test/scan.test.mjs test/guard.test.mjs test/skills.test.mjs",
     "scan": "node skills/check/scripts/scan.mjs"
   }
 }

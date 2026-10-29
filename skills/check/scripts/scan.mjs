@@ -15,7 +15,7 @@ import {
   findSecrets, mask, redact, classifyEnvName,
 } from './rules.mjs';
 
-const VERSION = '1.0.3';
+const VERSION = '1.0.4';
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILES = 20000;
 const MAX_PER_RULE = { text: 25, json: 200 }; // agents read --json and need the full picture

@@ -1,7 +1,7 @@
 # vibecheck report: {{app name}}
 
 > {{date}} · mode: {{quick|full|security|launch}} · exposure: {{public|internal|local}} · scanner {{version or "not run"}} · stack: {{stack}}
-> Keep this file private: it lists weaknesses. (`.vibecheck/` ignores itself in git.)
+> Keep this file private: it lists weaknesses. `.vibecheck/` ignores itself in git; {{also exclude it from: zip/archive, .dockerignore, npm `files`… or "nothing else ships this folder"}}.
 
 ## 🚦 Verdict: {{🔴 NO-GO | 🟡 FIX FIRST | 🟢 GO}}{{ (local only) | (internal only)}} · {{score}}/100 ({{grade}})
 

@@ -103,8 +103,15 @@ Put the exposure in the verdict. A `local` or `internal` GO is never a public GO
 ## Step 6: Write the report
 
 1. Create `.vibecheck/` containing a `.gitignore` with the single line `*`. This keeps reports out of git without touching the user's own .gitignore. The report lists weaknesses, so it must never be committed publicly.
-2. If `.vibecheck/report.md` exists, rename it to `.vibecheck/report.prev.md`.
-3. Write `.vibecheck/report.md` following [templates/report.md](templates/report.md).
+2. `.gitignore` only protects git. Check how else this project leaves the machine, and if `.vibecheck/` could go along, say so in the report header and the chat summary:
+   - not a git repo (scanner `"git": false`), or shared as a zip or handoff archive: exclude `.vibecheck/` when archiving
+   - a `Dockerfile` that copies the whole folder (`COPY . .`): add `.vibecheck` to `.dockerignore`
+   - an npm package that isn't `"private": true`: keep it out with the `files` field or `.npmignore`
+   - deploy CLIs, upload scripts or source listings that don't read `.gitignore`: exclude it there
+
+   Don't edit those files during the audit. Name the file and the line to add, and offer to do it.
+3. If `.vibecheck/report.md` exists, rename it to `.vibecheck/report.prev.md`.
+4. Write `.vibecheck/report.md` following [templates/report.md](templates/report.md).
 
 Every finding needs: an ID (`VC-…` from the scanner or checklist), severity, a plain-words title, where it is, what can happen, why (one technical line), how to fix it, and a **fix prompt**. A fix prompt is a self-contained instruction the user can paste into any AI tool (Claude Code, Cursor, Lovable, Bolt, v0, Replit). It names the file, says what to change and what not to break, and says how to confirm the fix worked.
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.4 (2026-10-29)
+
+From the first full check → fix → re-check cycle on a real app.
+
+- **Reports stay private outside git too.** `.vibecheck/.gitignore` only protects git. The audit now checks how else the project leaves the machine (no git, zip or handoff archives, Docker `COPY . .`, public npm packages, upload scripts) and tells you where to exclude `.vibecheck/`. It offers the edit instead of making it.
+- **`fix` stays inside the finding.** It asks before touching files the fix doesn't need (docs, build, QA or packaging scripts).
+- **`fix` doesn't restart your processes.** It tells you which running servers still have the old code and that unsaved demo state may be lost.
+- **`fix` without git:** if you'd rather not use git, it backs up each file to `.vibecheck/backup-<finding-id>/` before editing.
+- New `test/skills.test.mjs` checks every skill's frontmatter, that every linked reference file exists, and that all version numbers match.
+
 ## 1.0.3 (2026-10-29)
 
 - **Skipped folders no longer hide code that ships.** A file under a test, backup or QA folder is checked like app code when app code imports it, directly or through other imports (`import`, `export … from`, `import()`, `require()`, including `./x.js` → `x.ts` and folder `index` files). In a real audit, two OpenAPI helpers kept in `qa-scripts/` were used at runtime and had been skipped.

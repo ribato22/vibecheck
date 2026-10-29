@@ -17,7 +17,7 @@ Turn the audit into a safe app without breaking it. Small, verified, reversible 
 ## 1. Safety net first
 
 - In a git repo with uncommitted changes: suggest committing or stashing first, so every fix is its own clean diff. Ask; don't commit for them unasked.
-- No git: offer `git init` plus an initial commit. It's the undo button if a fix goes wrong.
+- No git: offer `git init` plus an initial commit. It's the undo button if a fix goes wrong. If they'd rather not, copy each file you'll change into `.vibecheck/backup-<finding-id>/` before editing it, and tell them where the copies are.
 
 ## 2. Fix one finding at a time
 
@@ -40,6 +40,8 @@ New dependency needed (a rate limiter, zod, DOMPurify)? Name it and why, and ask
 - **Never rotate keys, change dashboard settings or run SQL against production yourself.** Write the migration and the steps; the user applies them.
 - **Never rewrite git history or force-push** without an explicit yes, and only *after* the leaked key is rotated (rotation is what actually protects them).
 - Never paste a secret into chat, the report or a commit message.
+- **Stay inside the finding.** Don't edit files the fix doesn't need (other features, docs, build, QA or packaging scripts) without asking first. If something else should change, say what and why, and wait for a yes.
+- **Don't restart, stop or redeploy** processes you didn't start. Running dev servers, workers and deployed apps keep the old code until they restart: tell the user what to restart, and that unsaved demo state may be lost.
 
 ## 4. Recipes
 
@@ -69,7 +71,7 @@ Re-run the `check` skill in `quick` mode (or `full` if the user wants) and show 
   1. Rotate the OpenAI key: platform.openai.com → API keys
   2. Apply supabase/migrations/20261028_vibecheck_rls.sql (supabase db push)
   3. Set a monthly spend limit at OpenAI and Vercel
-Then redeploy so the new env vars take effect.
+Then restart your dev server and redeploy, so the fixed code and new env vars are what actually runs.
 ```
 
 Remind them a GO is only GO after the "needs you" items are done and the app is redeployed.
