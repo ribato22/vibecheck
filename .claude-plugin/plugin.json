@@ -1,7 +1,7 @@
 {
   "name": "vibecheck",
-  "version": "1.0.4",
-  "description": "Pre-launch security & readiness audit for AI-built apps: finds leaked keys, missing Supabase RLS, open Firebase rules, unprotected APIs and billing abuse, scores your app 0-100 with a GO/NO-GO verdict, fixes it step by step, and guards every write and commit against secrets.",
+  "version": "1.1.0",
+  "description": "Pre-launch security & readiness audit for AI-built apps: finds leaked keys, missing Supabase RLS, open Firebase rules, unprotected APIs and billing abuse, scores your app 0-100 with a GO/NO-GO verdict, checks it will run in production, fixes it step by step, and guards every write and commit against secrets.",
   "author": {
     "name": "ribato22",
     "url": "https://github.com/ribato22"
@@ -9,5 +9,5 @@
   "homepage": "https://github.com/ribato22/vibecheck",
   "repository": "https://github.com/ribato22/vibecheck",
   "license": "MIT",
-  "keywords": ["security", "vibe-coding", "audit", "supabase", "firebase", "stripe", "secrets", "launch", "rls", "debugging"]
+  "keywords": ["security", "vibe-coding", "audit", "supabase", "firebase", "stripe", "secrets", "launch", "rls", "debugging", "deploy", "vercel"]
 }

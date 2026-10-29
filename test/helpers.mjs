@@ -11,6 +11,7 @@ import { isPlaceholder } from '../skills/check/scripts/rules.mjs';
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const SCAN = join(ROOT, 'skills/check/scripts/scan.mjs');
 export const GUARD = join(ROOT, 'hooks/guard.mjs');
+export const PREFLIGHT = join(ROOT, 'skills/deploy/scripts/preflight.mjs');
 
 const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
@@ -67,6 +68,12 @@ export function scan(dir, ...flags) {
   const r = spawnSync(process.execPath, [SCAN, dir, '--json', ...flags], { encoding: 'utf8' });
   if (r.status !== 0 && !flags.includes('--fail-on')) throw new Error(`scan failed: ${r.stderr}`);
   return { ...JSON.parse(r.stdout), exitCode: r.status };
+}
+
+export function preflight(dir, ...flags) {
+  const r = spawnSync(process.execPath, [PREFLIGHT, dir, '--json', ...flags], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`preflight failed: ${r.stderr}`);
+  return JSON.parse(r.stdout);
 }
 
 export function guard(event, env = {}) {

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0 (2026-10-29)
+
+New skill: **`/vibecheck:deploy`**, a pre-deploy check for "works on my machine, broken in production".
+
+- A new self-contained, read-only scanner (`skills/deploy/scripts/preflight.mjs`) finds:
+  - env vars the code uses that aren't set on the host (pass the host's variable *names* with `--host-env`; values are never read), or that are missing from `.env.example`
+  - hardcoded `localhost` URLs, and env var fallbacks to localhost
+  - imports whose letter case only matches on Mac/Windows (`'./button'` vs `Button.tsx`), which break on Linux build servers
+  - packages imported but not listed in package.json
+  - servers on a fixed port or bound to `127.0.0.1` on Railway, Render, Fly, Heroku and Docker, and a missing `start` script
+  - SQLite and disk writes on serverless hosts, Prisma Client never generated, multiple lockfiles, Node version mismatches
+- It detects the host from config files, or takes `--host`, and turns the stack into a checklist of host-side steps: migrations, auth redirect URLs, live webhooks, rebuilding after public env changes.
+- `references/hosts.md` has checklists for Vercel, Netlify, Cloudflare, Railway, Render, Fly, Heroku, Docker and Python apps.
+- `/vibecheck:fix` now handles `VC-DEPLOY-*` findings from `.vibecheck/deploy.md`.
+
 ## 1.0.4 (2026-10-29)
 
 From the first full check → fix → re-check cycle on a real app.

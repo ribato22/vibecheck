@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { ROOT, SCAN } from './helpers.mjs';
+import { ROOT, SCAN, PREFLIGHT } from './helpers.mjs';
 
 const read = (rel) => readFileSync(join(ROOT, rel), 'utf8');
 const skills = readdirSync(join(ROOT, 'skills'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
@@ -22,7 +22,7 @@ function markdownFiles(dir) {
 }
 
 test('every skill has Agent Skills-compliant frontmatter', () => {
-  assert.deepEqual(skills.sort(), ['check', 'fix', 'unstuck']);
+  assert.deepEqual(skills.sort(), ['check', 'deploy', 'fix', 'unstuck']);
   for (const name of skills) {
     const fm = frontmatter(read(`skills/${name}/SKILL.md`));
     assert.equal(fm.name, name, `${name}: name must match its folder`);
@@ -56,6 +56,7 @@ test('plugin, package, scanner and changelog versions agree', () => {
   const plugin = JSON.parse(read('.claude-plugin/plugin.json')).version;
   const pkg = JSON.parse(read('package.json')).version;
   const scanner = spawnSync(process.execPath, [SCAN, '--version'], { encoding: 'utf8' }).stdout.trim();
+  const preflight = spawnSync(process.execPath, [PREFLIGHT, '--version'], { encoding: 'utf8' }).stdout.trim();
   const changelog = /^## (\d+\.\d+\.\d+)/m.exec(read('CHANGELOG.md'))?.[1];
-  assert.deepEqual({ pkg, scanner, changelog }, { pkg: plugin, scanner: plugin, changelog: plugin });
+  assert.deepEqual({ pkg, scanner, preflight, changelog }, { pkg: plugin, scanner: plugin, preflight: plugin, changelog: plugin });
 });

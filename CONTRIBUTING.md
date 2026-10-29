@@ -12,6 +12,9 @@ skills/check/            the audit skill
   scripts/scan.mjs       the scanner: files, stack detection, SQL/Firebase analysis, output
   references/            the manual checklist and per-stack guides
   templates/report.md    report skeleton
+skills/deploy/           "works locally, broken in production" preflight
+  scripts/preflight.mjs  deterministic deploy checks (self-contained, no shared imports)
+  references/hosts.md    per-host checklists
 skills/fix/              guided fixing
 skills/unstuck/          the debugging protocol for AI fix loops
 hooks/                   the guard (PreToolUse hook)

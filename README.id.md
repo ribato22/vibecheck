@@ -33,6 +33,7 @@ AI menulis kode yang **jalan**. Tidak ada yang mengecek apakah kodenya **aman**.
 - 📋 **Prompt perbaikan siap tempel.** Setiap temuan punya prompt siap pakai untuk Claude Code, Cursor, Lovable, Bolt, v0 atau Replit, jadi tetap berguna walau aplikasimu dibuat di no-code builder.
 - 🛠️ **`/vibecheck:fix`.** Memperbaiki satu per satu, yang kritis dulu, memverifikasi setiap perbaikan, dan tidak pernah "memperbaiki" dengan cara melemahkan keamanan.
 - 🛡️ **Guard yang selalu aktif.** Hook yang mencegah agent menulis API key langsung di kode atau meng-commit `.env`, *sebelum* terjadi.
+- 🚀 **`/vibecheck:deploy`.** Menangkap masalah "jalan di laptop, rusak di production" sebelum deploy: env var yang belum diset di hosting, URL `localhost` yang tertanam di kode, import yang huruf besar-kecilnya hanya cocok di Mac, package yang tidak tercatat di package.json, server di port yang salah, SQLite di serverless, dan langkah dashboard yang sering terlupa.
 - 🧭 **`/vibecheck:unstuck`.** Memutus "AI fix loop" saat bug yang sama terus muncul lagi.
 
 ## Apa saja yang dicek
@@ -47,6 +48,7 @@ AI menulis kode yang **jalan**. Tidak ada yang mengecek apakah kodenya **aman**.
 | 🚀 **Konfigurasi** | `CORS *` dengan credentials, mode debug, source map publik, verifikasi TLS dimatikan, security header kurang, package npm hasil halusinasi AI |
 | 🛟 **Keandalan** | Tidak pakai git, tanpa backup, tanpa error monitoring, skema tidak ada di migration, tanpa lockfile |
 | 🌍 **Launch** | Kebijakan privasi (UU PDP) dan syarat & ketentuan, hapus akun (wajib di App Store), OG tag, sitemap, robots, halaman 404, favicon, analytics, DNS email |
+| 🚀 **Deploy** | Env var belum diset di hosting, URL `localhost`, `import './button'` padahal filenya `Button.tsx` (rusak di Linux), package tidak tercatat, port tetap dan `127.0.0.1` di container, SQLite dan tulis file di serverless, Prisma client tidak di-generate, versi Node dan lockfile tidak cocok |
 
 Cakupan paling dalam: **Next.js, React/Vite, Supabase, Firebase, Stripe, OpenAI/Anthropic/Gemini, Express, FastAPI/Flask/Django, Expo**, plus **Midtrans dan Xendit** untuk pembayaran Indonesia. Pengecekan umum tetap jalan di stack apa pun.
 
@@ -79,9 +81,11 @@ Salin folder di dalam `skills/` ke `~/.claude/skills/` (atau folder skill agent-
 | `/vibecheck:check launch` | Checklist rilis (legal, SEO, monitoring) plus temuan kritis |
 | `/vibecheck:fix` | Perbaiki yang kritis lalu yang tinggi, satu per satu, dengan skor sebelum → sesudah |
 | `/vibecheck:fix VC-DB-NO-RLS` | Perbaiki satu temuan tertentu |
+| `/vibecheck:deploy` | Apakah akan jalan di production? Env var vs hosting, URL localhost, import peka huruf besar-kecil, port, penyimpanan serverless, plus checklist hosting → `.vibecheck/deploy.md` |
+| `/vibecheck:deploy --host vercel` | Sama, dengan pengecekan khusus hosting (vercel, netlify, cloudflare, railway, render, fly, heroku, docker) |
 | `/vibecheck:unstuck` | Hentikan fix loop: reproduksi bug, cari akar masalah, buang tumpukan perbaikan gagal |
 
-Tidak perlu dihafal. Tanya saja *"aplikasiku sudah siap rilis belum?"* atau bilang *"masih error, kamu muter-muter terus"*, dan skill yang tepat akan jalan sendiri. Di agent lain, panggil skill-nya dengan nama (`check`, `fix`, `unstuck`).
+Tidak perlu dihafal. Tanya saja *"aplikasiku sudah siap rilis belum?"*, *"kenapa jalan di laptop tapi rusak di Vercel?"* atau bilang *"masih error, kamu muter-muter terus"*, dan skill yang tepat akan jalan sendiri. Di agent lain, panggil skill-nya dengan nama (`check`, `deploy`, `fix`, `unstuck`).
 
 ## Guard (selalu aktif)
 

@@ -10,7 +10,7 @@ Turn the audit into a safe app without breaking it. Small, verified, reversible 
 
 ## 0. Load the findings
 
-- Read `.vibecheck/report.md`. If there isn't one, run the `check` skill in `quick` mode first. Code changes since the report? Re-check each finding before touching it.
+- Read `.vibecheck/report.md`, and `.vibecheck/deploy.md` for `VC-DEPLOY-*` findings. If neither exists, run the `check` skill in `quick` mode first (or `deploy`, if the user is fixing a deploy). Code changes since the report? Re-check each finding before touching it.
 - Scope from `$ARGUMENTS`: a finding ID (`VC-DB-NO-RLS`), a severity (`critical`, `high`), or `all`. Default: every critical, then every high.
 - Show the user the plan in plain words: which findings, what will change, what they'll need to do themselves (rotate keys, apply a migration, change a dashboard setting). Get a yes before editing.
 
@@ -58,6 +58,7 @@ Details per stack are in the `check` skill's `references/stacks/*.md`. Read the 
 | Unverified webhook / client price / success-URL grants (VC-PAY-*) | `constructEvent` on the raw body (or the provider's equivalent); fulfil from the webhook; look prices up by ID on the server; make the handler idempotent. |
 | SQL injection / mass assignment | Parameterized queries; explicit field picking with zod. |
 | XSS | Sanitize with DOMPurify, or render as text. |
+| Deploy breakers (VC-DEPLOY-*) | Match the import to the file's exact letter case (and `git mv` a case-only rename); `npm install` undeclared packages and commit the lockfile; replace hardcoded localhost with an env var; listen on `process.env.PORT` and bind 0.0.0.0 in production; add `prisma generate` to the build; move SQLite or disk writes to a hosted database or object storage; one lockfile; one Node version. Env vars missing on the host are a "needs you" item: give the names, never the values. |
 | Launch basics (VC-LAUNCH-*) | Generate a privacy policy and terms draft (mark them "review with a lawyer"), OG metadata, robots, sitemap, 404, favicon placeholder. Batch these in one step after the security fixes. |
 
 ## 5. Finish

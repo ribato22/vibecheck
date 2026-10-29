@@ -8,7 +8,7 @@
     {
       "name": "vibecheck",
       "source": "./",
-      "description": "Launch audit (score + GO/NO-GO), guided fixes, secret guard hook, and an unstuck protocol for AI fix loops.",
+      "description": "Launch audit (score + GO/NO-GO), deploy preflight, guided fixes, secret guard hook, and an unstuck protocol for AI fix loops.",
       "category": "security"
     }
   ]

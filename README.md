@@ -41,6 +41,7 @@ AI tools write code that **works**. Nobody checks that it's **safe**. vibecheck 
 - 📋 **Copy-paste fix prompts.** Every finding has a ready prompt for Claude Code, Cursor, Lovable, Bolt, v0 or Replit, so it helps even if your app lives in a no-code builder.
 - 🛠️ **`/vibecheck:fix`.** Fixes issues one at a time, criticals first, verifies each one, and never "fixes" by weakening security.
 - 🛡️ **An always-on guard.** A hook stops your agent from hardcoding API keys or committing `.env` *before* it happens.
+- 🚀 **`/vibecheck:deploy`.** Catches "works on my machine, broken in production" before you deploy: env vars missing on the host, hardcoded localhost URLs, imports whose letter case only works on a Mac, packages missing from package.json, servers on the wrong port, SQLite on serverless, and the dashboard steps people forget.
 - 🧭 **`/vibecheck:unstuck`.** Breaks the "AI fix loop" when the same bug keeps coming back.
 
 ## What it catches
@@ -55,6 +56,7 @@ AI tools write code that **works**. Nobody checks that it's **safe**. vibecheck 
 | 🚀 **Config** | `CORS *` with credentials, debug mode, public source maps, disabled TLS checks, missing security headers, hallucinated npm packages |
 | 🛟 **Reliability** | No git, no backups, no error monitoring, schema not in migrations, no lockfile |
 | 🌍 **Launch** | Privacy policy and terms, account deletion (App Store), OG tags, sitemap, robots, 404, favicon, analytics, email DNS |
+| 🚀 **Deploy** | Env vars not set on the host, `localhost` URLs, `import './button'` vs `Button.tsx` (breaks on Linux), undeclared packages, fixed ports and `127.0.0.1` in containers, SQLite and disk writes on serverless, Prisma client not generated, Node version and lockfile mismatches |
 
 Deepest coverage: **Next.js, React/Vite, Supabase, Firebase, Stripe, OpenAI/Anthropic/Gemini, Express, FastAPI/Flask/Django, Expo**, with **Midtrans and Xendit** for Indonesian payments. The generic checks work on any stack.
 
@@ -87,9 +89,11 @@ Copy the folders in `skills/` into `~/.claude/skills/` (or your agent's skills f
 | `/vibecheck:check launch` | Launch checklist (legal, SEO, monitoring) plus any critical |
 | `/vibecheck:fix` | Fix criticals, then highs, one at a time, with before → after score |
 | `/vibecheck:fix VC-DB-NO-RLS` | Fix one specific finding |
+| `/vibecheck:deploy` | Will it run in production? Env vars vs the host, localhost URLs, case-sensitive imports, ports, serverless storage, plus the host checklist → `.vibecheck/deploy.md` |
+| `/vibecheck:deploy --host vercel` | Same, with host-specific checks (vercel, netlify, cloudflare, railway, render, fly, heroku, docker) |
 | `/vibecheck:unstuck` | Stop the fix loop: reproduce, find the root cause, revert the pile |
 
-You don't have to remember them. Ask *"is my app ready to launch?"* or say *"it's still broken, you keep going in circles"* and the right skill kicks in. In other agents, call the skill by name (`check`, `fix`, `unstuck`).
+You don't have to remember them. Ask *"is my app ready to launch?"*, *"why does it work locally but not on Vercel?"* or say *"it's still broken, you keep going in circles"* and the right skill kicks in. In other agents, call the skill by name (`check`, `deploy`, `fix`, `unstuck`).
 
 ## The guard (always on)
 

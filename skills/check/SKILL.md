@@ -128,7 +128,7 @@ Keep the chat summary short:
 3. 🔴 Stripe webhook isn't verified: anyone can fake a payment and unlock Pro.
 …
 Full report: .vibecheck/report.md
-Next: /vibecheck:fix fixes these one at a time, criticals first.
+Next: /vibecheck:fix fixes these one at a time, criticals first. Before deploying, /vibecheck:deploy checks it will run in production.
 ```
 
 - **Live secret found:** say clearly that removing it from the code is not enough. It must be revoked and replaced in the provider dashboard. If it was ever pushed or deployed, treat it as stolen.
