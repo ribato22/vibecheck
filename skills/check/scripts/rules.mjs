@@ -216,7 +216,7 @@ export const CODE_RULES = [
     fix: 'If any part comes from users or an AI model, sanitize with DOMPurify first, or render as text.' },
   { id: 'VC-INJ-EVAL', category: 'input', severity: 'medium', langs: JS,
     title: 'eval / new Function',
-    re: /\beval\s*\(|\bnew\s+Function\s*\(/g,
+    re: /(?<![$.\w])eval\s*\(|\bnew\s+Function\s*\(/g, // not Playwright's page.$eval / $$eval
     fix: 'Never evaluate strings that users or models can influence. Replace with JSON.parse or explicit logic.' },
   { id: 'VC-INJ-EVAL', category: 'input', severity: 'medium', langs: PY,
     title: 'eval / exec',

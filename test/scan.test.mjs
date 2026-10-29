@@ -177,3 +177,53 @@ test('placeholders and ignore markers are not reported', () => {
     removeProject(dir);
   }
 });
+
+test('Playwright $eval / $$eval are not flagged as eval()', () => {
+  const dir = makeProject({
+    'src/report.js': 'export const go = (page) => page.$$eval("tr", (rows) => rows.length);\nexport const one = (page) => page.$eval("#a", (e) => e.textContent);\n',
+    'src/danger.js': 'export const run = (input) => eval(input);\n',
+  });
+  try {
+    const evals = scan(dir).findings.filter((f) => f.id === 'VC-INJ-EVAL').map((f) => f.file);
+    assert.deepEqual(evals, ['src/danger.js']);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('backup, archive and QA folders skip code patterns but still get secret scans', () => {
+  const dir = makeProject({
+    'package.json': JSON.stringify({ dependencies: { '@supabase/supabase-js': '2.45.0' } }),
+    'package-lock.json': '{}',
+    'public/app.js': 'el.innerHTML = userInput;\n',
+    'handoff/backup-pra-A0-L/app.js': `el.innerHTML = userInput;\nconst key = "${keys.openai}";\n`,
+    'handoff/qa-scripts/browser/qa-batch3.js': 'el.innerHTML = x;\n',
+    'old/server.py': 'cur.execute(f"SELECT * FROM t WHERE id = {i}")\n',
+    'src/app.backup.js': 'eval(x);\n',
+    'archive/2025/schema.sql': 'create table public.legacy (id int);\n',
+  });
+  try {
+    const report = scan(dir);
+    const code = report.findings.filter((f) => f.category !== 'secrets' && f.file).map((f) => `${f.id} ${f.file}`);
+    assert.deepEqual(code, ['VC-XSS-HTML public/app.js'], 'only shipping code is pattern-checked');
+    assert.ok(report.findings.some((f) => f.id === 'VC-KEY-OPENAI' && f.file === 'handoff/backup-pra-A0-L/app.js'), 'secrets in backups are still found');
+    const note = report.notes.find((n) => n.startsWith('Code patterns not checked in 5 '));
+    assert.ok(note, JSON.stringify(report.notes));
+    assert.match(note, /handoff\/backup-pra-A0-L\//);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('test files skip the generic secret guess but not real key formats', () => {
+  const dir = makeProject({
+    'test/contract.test.mjs': `const headers = { apiKey: "raha8f3kQ9z2x8765" };\nconst real = "${keys.anthropic}";\n`,
+    'src/config.js': 'export const apiKey = "raha8f3kQ9z2x8765";\n',
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.category === 'secrets').map((f) => `${f.id} ${f.file}`);
+    assert.deepEqual(found.sort(), ['VC-KEY-ANTHROPIC test/contract.test.mjs', 'VC-KEY-GENERIC src/config.js'].sort());
+  } finally {
+    removeProject(dir);
+  }
+});

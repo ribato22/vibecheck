@@ -34,6 +34,7 @@ Read the manifests (package.json, requirements.txt, pyproject.toml), framework c
 - the framework(s), and **every place server code runs**: API routes, server actions, edge/cloud functions, a separate backend, RPC functions
 - the database and auth provider, payments, AI/email/SMS providers, hosting, mobile clients
 - the hot spots: anything that touches money, personal data, or a paid API
+- **the exposure**, meaning who can reach the app: `public` (anyone on the internet, deployed or meant to be), `internal` (a company network, VPN or invited users only) or `local` (only this machine: it listens on 127.0.0.1/localhost and holds demo or synthetic data). Infer it from listen addresses, hosting and deploy config, and the docs. If it's unclear, use `public`, because that's what attackers assume, and say so in the report.
 
 In a monorepo, audit each deployable app.
 
@@ -87,6 +88,16 @@ grade: A ≥ 90 · B ≥ 80 · C ≥ 65 · D ≥ 50 · F < 50
 
 For `quick`, `security` and `launch`, label it with the mode, for example "Launch Score (quick)". A partial audit is never a full GO.
 
+Judge every finding for the app's exposure:
+
+| Exposure | What counts |
+|---|---|
+| `public` | Everything. |
+| `internal` | Everything except launch basics (area 8). Insiders and stolen laptops are real attackers, so missing auth still counts. |
+| `local` | Secrets count in full, because they leak through git, zips and screenshots. Missing auth, authorization, rate limits and launch basics don't deduct while the app only listens on localhost and holds no real data. List them under "Before exposing it more widely" instead. |
+
+Put the exposure in the verdict. A `local` or `internal` GO is never a public GO: write it as "🟢 GO (local only)" or "🟢 GO (internal only)".
+
 ## Step 6: Write the report
 
 1. Create `.vibecheck/` containing a `.gitignore` with the single line `*`. This keeps reports out of git without touching the user's own .gitignore. The report lists weaknesses, so it must never be committed publicly.
@@ -100,7 +111,7 @@ Every finding needs: an ID (`VC-…` from the scanner or checklist), severity, a
 Keep the chat summary short:
 
 ```
-🚦 vibecheck: 🔴 NO-GO · 31/100 (F)
+🚦 vibecheck: 🔴 NO-GO · 31/100 (F) · public app
 3 critical · 2 high · 4 medium · 6 low · 2 to verify
 
 1. 🔴 Your OpenAI key is in the browser bundle: anyone can spend your credit. (src/lib/ai.ts:4)
@@ -112,5 +123,6 @@ Next: /vibecheck:fix fixes these one at a time, criticals first.
 ```
 
 - **Live secret found:** say clearly that removing it from the code is not enough. It must be revoked and replaced in the provider dashboard. If it was ever pushed or deployed, treat it as stolen.
-- **🟢 GO only:** offer a README badge. Never offer one for a failing score: a public "NO-GO" badge points attackers at the app.
+- **Not public yet:** for a `local` or `internal` app, end with the short list of what must change before more people can reach it.
+- **🟢 GO in `full` mode for a public app only:** offer a README badge. Never offer one for a failing score (a public "NO-GO" badge points attackers at the app) or for a local-only GO (the badge would overstate it).
   `[![vibecheck: GO 92/100](https://img.shields.io/badge/vibecheck-GO%2092%2F100-brightgreen)](https://github.com/ribato22/vibecheck)`

@@ -1,6 +1,6 @@
 # vibecheck checklist
 
-Eight areas, ordered by how badly they hurt. The severity column is the default: adjust it to the real impact in this app. IDs marked ⚙ are also checked by the scanner. Everything else needs you to read code or ask the user about a dashboard setting.
+Eight areas, ordered by how badly they hurt. The severity column is the default: adjust it to the real impact in this app and to its exposure (public, internal or local; see Step 5 of SKILL.md). IDs marked ⚙ are also checked by the scanner. Everything else needs you to read code or ask the user about a dashboard setting.
 
 Severity guide:
 - **critical**: an attacker can, today, steal or change other users' data, take over accounts, or spend the owner's money. Launch blocker.

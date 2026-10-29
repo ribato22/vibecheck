@@ -1,6 +1,6 @@
 # vibecheck report: my-saas
 
-> 2026-10-28 · mode: full · scanner 1.0.0 · stack: Next.js 15, Supabase, Stripe, OpenAI, Vercel
+> 2026-10-28 · mode: full · exposure: public · scanner 1.0.0 · stack: Next.js 15, Supabase, Stripe, OpenAI, Vercel
 > Keep this file private: it lists weaknesses. (`.vibecheck/` ignores itself in git.)
 >
 > *This is an example report for a fictional app, to show what vibecheck produces.*

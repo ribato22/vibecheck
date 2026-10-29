@@ -1,6 +1,6 @@
 {
   "name": "vibecheck",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Pre-launch security & readiness audit for AI-built apps: finds leaked keys, missing Supabase RLS, open Firebase rules, unprotected APIs and billing abuse, scores your app 0-100 with a GO/NO-GO verdict, fixes it step by step, and guards every write and commit against secrets.",
   "author": {
     "name": "ribato22",

@@ -1,9 +1,9 @@
 # vibecheck report: {{app name}}
 
-> {{date}} · mode: {{quick|full|security|launch}} · scanner {{version or "not run"}} · stack: {{stack}}
+> {{date}} · mode: {{quick|full|security|launch}} · exposure: {{public|internal|local}} · scanner {{version or "not run"}} · stack: {{stack}}
 > Keep this file private: it lists weaknesses. (`.vibecheck/` ignores itself in git.)
 
-## 🚦 Verdict: {{🔴 NO-GO | 🟡 FIX FIRST | 🟢 GO}} · {{score}}/100 ({{grade}})
+## 🚦 Verdict: {{🔴 NO-GO | 🟡 FIX FIRST | 🟢 GO}}{{ (local only) | (internal only)}} · {{score}}/100 ({{grade}})
 
 | 🔴 Critical | 🟠 High | 🟡 Medium | 🔵 Low | ❔ To verify |
 |:-:|:-:|:-:|:-:|:-:|
@@ -43,6 +43,10 @@
 {{…one block per finding, ordered critical → low. Group low-severity launch items into a single checklist block.}}
 
 ---
+
+## 🔓 Before exposing it more widely
+
+{{Only for `local` or `internal` apps. Everything that doesn't deduct today but must change before more people can reach the app (auth, ownership checks, rate limits, launch basics), each with a fix prompt. Remove this section for public apps.}}
 
 ## ❔ Check these yourself (outside the code)
 

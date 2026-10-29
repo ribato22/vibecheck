@@ -15,7 +15,7 @@ import {
   findSecrets, mask, redact, classifyEnvName,
 } from './rules.mjs';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILES = 20000;
 const MAX_PER_RULE = 25;
@@ -93,6 +93,10 @@ const ENV_EXAMPLE = /(?:example|sample|template|dist|defaults?)$/i;
 const isEnvFile = (rel) => ENV_NAME.test(basename(rel));
 const isRealEnvFile = (rel) => isEnvFile(rel) && !ENV_EXAMPLE.test(basename(rel));
 const isTestPath = (rel) => /(?:^|\/)(?:__tests__|tests?|spec|fixtures?|mocks?|__mocks__|e2e)\/|\.(?:test|spec)\.[cm]?[jt]sx?$/.test(rel);
+// Code that doesn't ship: backups, archives and QA tooling. Secrets are still scanned there.
+const isArchivePath = (rel) =>
+  /(?:^|\/)(?:backups?|archives?|archived|old|deprecated|qa)(?:[-_.][^/]*)?\/|(?:^|\/)(?:playwright|cypress)\/|[-_.](?:backup|bak|old|orig|copy)\.(?:[cm]?[jt]sx?|py)$/i.test(rel);
+const isNonShipping = (rel) => isTestPath(rel) || isArchivePath(rel);
 const inSkippedDir = (rel) => rel.split('/').slice(0, -1).some((d) => SKIP_DIRS.has(d));
 
 function langOf(rel) {
@@ -254,6 +258,7 @@ const SIGNAL_RE = {
 
 const sqlFiles = [];
 const publicEnvSeen = new Map();
+const skippedDirs = new Map();
 let scanned = 0;
 
 function notePublicEnv(fullName, suffix, rel, line) {
@@ -292,6 +297,7 @@ for (const rel of files) {
   if (isGit || !isRealEnvFile(rel)) {
     lines.forEach((line, i) => {
       for (const { rule, value } of findSecrets(line)) {
+        if (rule.id === 'VC-KEY-GENERIC' && isTestPath(rel)) continue; // tests are full of fake "secret" values
         add({ id: rule.id, category: 'secrets', severity: rule.severity, confidence: rule.confidence,
           title: rule.title, file: rel, line: i + 1, evidence: mask(value), fix: rule.fix });
       }
@@ -308,27 +314,31 @@ for (const rel of files) {
 
   for (const [k, re] of Object.entries(SIGNAL_RE)) if (!signals[k] && re.test(content)) signals[k] = true;
 
+  const rulesFile = /(?:^|\/)(?:[\w.-]+\.rules|database\.rules\.json)$/.test(rel);
+  if ((lang || ext === '.sql' || rulesFile) && isNonShipping(rel)) {
+    const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/') + 1) : './';
+    skippedDirs.set(dir, (skippedDirs.get(dir) || 0) + 1);
+    continue;
+  }
   if (ext === '.sql') sqlFiles.push({ rel, content });
-  if (/(?:^|\/)(?:[\w.-]+\.rules|database\.rules\.json)$/.test(rel)) analyzeFirebaseRules(rel, content);
+  if (rulesFile) analyzeFirebaseRules(rel, content);
   if (!lang) continue;
 
   const starts = lineStarts(content);
   const at = (pos) => lineAt(starts, pos);
 
-  if (!isTestPath(rel)) {
-    for (const rule of CODE_RULES) {
-      if (!rule.langs.includes(lang)) continue;
-      if (rule.path && !rule.path.test(rel)) continue;
-      if (rule.requires && !rule.requires.test(content)) continue;
-      rule.re.lastIndex = 0;
-      for (const m of content.matchAll(rule.re)) {
-        const line = at(m.index);
-        if (lines[line - 1].includes('vibecheck-ignore')) continue;
-        let severity = rule.severity;
-        if (rule.id === 'VC-CFG-CORS' && /credentials\s*:\s*true|allow_credentials\s*=\s*True|Allow-Credentials["']?\s*[,:]\s*["']?true/i.test(content)) severity = 'high';
-        add({ id: rule.id, category: rule.category, severity, confidence: rule.confidence, title: rule.title,
-          file: rel, line, evidence: snippet(lines[line - 1]), fix: rule.fix });
-      }
+  for (const rule of CODE_RULES) {
+    if (!rule.langs.includes(lang)) continue;
+    if (rule.path && !rule.path.test(rel)) continue;
+    if (rule.requires && !rule.requires.test(content)) continue;
+    rule.re.lastIndex = 0;
+    for (const m of content.matchAll(rule.re)) {
+      const line = at(m.index);
+      if (lines[line - 1].includes('vibecheck-ignore')) continue;
+      let severity = rule.severity;
+      if (rule.id === 'VC-CFG-CORS' && /credentials\s*:\s*true|allow_credentials\s*=\s*True|Allow-Credentials["']?\s*[,:]\s*["']?true/i.test(content)) severity = 'high';
+      add({ id: rule.id, category: rule.category, severity, confidence: rule.confidence, title: rule.title,
+        file: rel, line, evidence: snippet(lines[line - 1]), fix: rule.fix });
     }
   }
 
@@ -578,6 +588,11 @@ findings.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
   (a.confidence === 'high' ? -1 : 1) - (b.confidence === 'high' ? -1 : 1) || String(a.file).localeCompare(String(b.file)));
 
 for (const [id, n] of perRule) if (n > MAX_PER_RULE) notes.push(`${id}: ${n - MAX_PER_RULE} more matches not shown.`);
+if (skippedDirs.size) {
+  const total = [...skippedDirs.values()].reduce((a, b) => a + b, 0);
+  const dirs = [...skippedDirs.keys()].sort();
+  notes.push(`Code patterns not checked in ${total} test/backup/QA files (secrets were): ${dirs.slice(0, 8).join(', ')}${dirs.length > 8 ? ` and ${dirs.length - 8} more` : ''}. If any of these ship to users, audit them by hand.`);
+}
 
 const counts = Object.fromEntries(SEVERITIES.map((s) => [s, findings.filter((f) => f.severity === s).length]));
 const report = {
