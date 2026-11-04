@@ -129,6 +129,8 @@ Right now, anyone can read every private message in your app and spend your Open
 - [ ] OpenAI and Vercel spend limits are set
 - [ ] Supabase backups: Pro plan or a regular `supabase db dump`
 - [ ] UNVERIFIED: owner-run signed-out/two-account checks with synthetic messages confirm private reads, updates and deletes are blocked, while intended public data stays accessible
+- [ ] UNVERIFIED: compare local `api.schemas` with deployed exposed schemas, then inspect each schema's grants/RLS and repeat the synthetic access checks using the correct schema profile
+- [ ] UNVERIFIED · VC-DB-STORAGE (manual): inspect bucket visibility and `storage.objects` policies; test signed-out/A-B listing/download/public URLs, signed-URL issuance/expiry, and path-swapped upload/update/upsert/delete with synthetic files. Unauthorized writes must leave A's objects unchanged
 
 ## ✅ What's already good
 
@@ -138,4 +140,4 @@ Right now, anyone can read every private message in your app and spend your Open
 
 ## Not covered
 
-Dashboard-only settings (Auth redirect URLs, storage buckets) and a live test of the deployed site. vibecheck is a strong first line of defence, not a penetration test.
+Dashboard-only settings (Auth redirect URLs, deployed exposed schemas and Storage visibility/policies) and live database/Storage access tests. The manual checks above have not been run; local config and source declarations don't establish deployed access. vibecheck is a strong first line of defence, not a penetration test.

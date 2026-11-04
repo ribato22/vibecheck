@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add configured custom-schema coverage from static Supabase `api.schemas` arrays, scoped to the closest project config while retaining `public` checks. Keep SQL object identity and RLS fixes schema-qualified; local configuration is not proof of deployed access.
+- Correct Storage guidance for public retrieval versus listing/write permissions, and add manual bucket/policy inventory plus signed-out/two-account synthetic file and signed-URL checks. Storage access remains unverified until the owner supplies deployed results.
 - View and SECURITY DEFINER leads now describe owner privileges conditionally and require verification of API exposure, effective grants and RLS behavior, rather than asserting public access or universal RLS bypass.
 - Follow static CREATE/ALTER view and function security modes across ordered SQL files, including view RESET/replacement semantics and separate function input signatures. Ignore quoted SQL bodies and nested comments when reading these declarations; deployed state remains unverified.
 - Recognized Supabase publishable keys and legacy anon JWTs no longer become generic secret leads; secret/service-role keys retain their existing detection and guard protections.
