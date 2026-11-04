@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { keys, makeProject, removeProject, git, scan, ids, SCAN } from './helpers.mjs';
+import { keys, rand, makeProject, removeProject, git, scan, ids, SCAN } from './helpers.mjs';
 
 const vulnerableNextApp = () => ({
   'package.json': JSON.stringify({
@@ -64,6 +64,110 @@ test('never prints a secret in full', () => {
     const raw = JSON.stringify(scan(dir));
     for (const k of [keys.openai, keys.stripeLive, keys.serviceRole, keys.dbUrl]) assert.ok(!raw.includes(k), 'secret leaked into output');
     assert.ok(raw.includes(keys.openai.slice(0, 4) + '…' + keys.openai.slice(-4)));
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('public Supabase values are not generic secrets under apiKey assignments', () => {
+  const dir = makeProject({
+    'src/clients.js': `const apiKey = "${keys.publishable}";\nconst client = { apiKey: "${keys.anon}" };\n`,
+  });
+  try {
+    assert.deepEqual(scan(dir).findings.filter((f) => f.category === 'secrets'), []);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('unrelated and malformed public-looking values remain generic secrets to verify', () => {
+  const [header, , signature] = keys.anon.split('.');
+  const jwt = (claims) => [header, Buffer.from(claims).toString('base64url'), signature].join('.');
+  const values = [
+    jwt(JSON.stringify({ iss: 'other-app', role: 'anon' })),
+    jwt(JSON.stringify({ iss: 'supabase', role: 'authenticated' })),
+    jwt('{"iss":"supabase","role":"anon"'),
+    ['eyJmalformedheader123', keys.anon.split('.')[1], signature].join('.'),
+    [Buffer.from(JSON.stringify({ typ: 'JWT' })).toString('base64url'), keys.anon.split('.')[1], signature].join('.'),
+    [Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url'), keys.anon.split('.')[1], signature].join('.'),
+    ...[16, 17, 42].map((length) => [header, keys.anon.split('.')[1], signature.slice(0, length)].join('.')),
+    [header, keys.anon.split('.')[1], signature + 'A'].join('.'),
+    keys.anon + '.extra',
+    keys.publishable + '!',
+  ];
+  const dir = makeProject({ 'src/keys.js': values.map((value) => `const apiKey = "${value}";`).join('\n') });
+  try {
+    const found = scan(dir).findings.filter((f) => f.category === 'secrets');
+    assert.deepEqual(found.map((f) => [f.id, f.line]), values.map((_, i) => ['VC-KEY-GENERIC', i + 1]));
+    assert.ok(found.every((f) => f.confidence === 'verify'));
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('skipping a public Supabase key does not hide generic secrets later on the same line', () => {
+  const secret = rand(32, 23);
+  const dir = makeProject({ 'src/keys.js': `const apiKey = "${keys.publishable}"; const accessToken = "${secret}";\n` });
+  try {
+    const found = scan(dir).findings.filter((f) => f.category === 'secrets');
+    assert.equal(found.length, 1);
+    assert.equal(found[0].id, 'VC-KEY-GENERIC');
+    assert.equal(found[0].evidence, `${secret.slice(0, 4)}…${secret.slice(-4)}`);
+    assert.ok(!JSON.stringify(found).includes(secret), 'the actual secret must be masked');
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase secret values remain critical and masked under public-looking variable names', () => {
+  const dir = makeProject({
+    'src/keys.js': `const SUPABASE_PUBLISHABLE_KEY = "${keys.supabaseSecret}";\nconst SUPABASE_ANON_KEY = "${keys.serviceRole}";\nconst apiKey = "${keys.openai}";\n`,
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.category === 'secrets');
+    assert.deepEqual(found.map((f) => f.id).sort(), ['VC-KEY-SUPABASE-SECRET', 'VC-KEY-SUPABASE-SERVICE', 'VC-KEY-OPENAI'].sort());
+    assert.ok(found.every((f) => f.severity === 'critical' && f.confidence === 'high'));
+    for (const value of [keys.supabaseSecret, keys.serviceRole, keys.openai]) assert.ok(!JSON.stringify(found).includes(value));
+    assert.equal(scan(dir, '--fail-on', 'critical').exitCode, 1);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('RLS-disabled migrations retain critical leads but require exposure and grants verification', () => {
+  const dir = makeProject({
+    'package.json': JSON.stringify({ dependencies: { '@supabase/supabase-js': '2.45.0' } }),
+    'supabase/migrations/001.sql': [
+      'create schema private;',
+      'create table private.payroll (id int);',
+      'alter table private.payroll disable row level security;',
+      'create table public.internal_notes (id int);',
+      'revoke all on public.internal_notes from public, anon, authenticated;',
+      'alter table public.internal_notes disable row level security;',
+      'create table public.messages (id int);',
+      'grant select, update on public.messages to anon, authenticated;',
+      'alter table public.messages disable row level security;',
+    ].join('\n'),
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-RLS-DISABLED');
+    assert.equal(found.length, 3, 'private, revoked and granted cases must all remain visible for review');
+    assert.deepEqual(found.map((f) => f.line).sort((a, b) => a - b), [3, 6, 9]);
+    assert.ok(found.every((f) => f.severity === 'critical'));
+    assert.ok(found.every((f) => f.confidence === 'verify'), 'migrations alone do not confirm the deployed API exposure and effective grants');
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('RLS leads do not fail default CI before verification but still fail strict CI', () => {
+  const dir = makeProject({
+    'package.json': JSON.stringify({ dependencies: { '@supabase/supabase-js': '2.45.0' } }),
+    'supabase/migrations/001.sql': 'create table public.notes (id int);\nalter table public.notes disable row level security;\n',
+  });
+  try {
+    assert.equal(scan(dir, '--fail-on', 'critical').exitCode, 0);
+    assert.equal(scan(dir, '--fail-on', 'critical', '--strict').exitCode, 1);
   } finally {
     removeProject(dir);
   }

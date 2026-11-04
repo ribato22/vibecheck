@@ -17,7 +17,9 @@
 
 ---
 
-Januari 2026, sebuah media sosial hasil vibe coding membocorkan **1,5 juta API token dan 35.000 email**. Penyebabnya satu key Supabase yang ada di front-end, sementara Row Level Security (RLS) dalam keadaan mati ([Wiz](https://www.wiz.io/blog/common-security-risks-in-vibe-coded-apps), [Infosecurity](https://www.infosecurity-magazine.com/news/moltbook-exposes-user-data-api/)). Tahun 2025, **170+ aplikasi Lovable** rilis dengan celah yang sama ([CVE-2025-48757](https://nvd.nist.gov/vuln/detail/CVE-2025-48757)). Setiap minggu ada saja yang baru sadar API key OpenAI-nya ikut ke bundle JavaScript setelah melihat tagihan.
+Januari 2026, sebuah media sosial hasil vibe coding membocorkan **1,5 juta API token dan 35.000 email**. API Supabase-nya membuka akses ke data privat saat Row Level Security (RLS) mati ([Wiz](https://www.wiz.io/blog/common-security-risks-in-vibe-coded-apps), [Infosecurity](https://www.infosecurity-magazine.com/news/moltbook-exposes-user-data-api/)). Tahun 2025, **170+ aplikasi Lovable** rilis dengan celah yang sama ([CVE-2025-48757](https://nvd.nist.gov/vuln/detail/CVE-2025-48757)). Setiap minggu ada saja yang baru sadar API key OpenAI-nya ikut ke bundle JavaScript setelah melihat tagihan.
+
+Key publishable/anon Supabase memang boleh ada di kode browser. Akses data ditentukan oleh skema yang diekspos API, grants untuk role, dan policy RLS. Key service-role dan secret tetap hanya di server.
 
 AI menulis kode yang **jalan**. Tidak ada yang mengecek apakah kodenya **aman**. vibecheck adalah senior engineer yang me-review aplikasimu sebelum deploy, dengan bahasa yang mudah dipahami dan perbaikan yang siap ditempel.
 
@@ -40,8 +42,8 @@ AI menulis kode yang **jalan**. Tidak ada yang mengecek apakah kodenya **aman**.
 
 | Area | Contoh |
 |---|---|
-| 🔑 **Secret** | Key OpenAI / Anthropic / Stripe / AWS / Supabase di kode; secret di balik `NEXT_PUBLIC_` / `VITE_` / `EXPO_PUBLIC_`; `.env` ter-commit sekarang atau di riwayat git |
-| 🗄️ **Database** | Tabel Supabase tanpa RLS, policy `using (true)`, user bisa mengubah `is_admin` miliknya sendiri, policy yang percaya `user_metadata`; rules Firebase "test mode" atau terbuka; key service-role di kode browser |
+| 🔑 **Secret** | Key OpenAI / Anthropic / Stripe / AWS dan key secret/service-role Supabase di kode; secret di balik `NEXT_PUBLIC_` / `VITE_` / `EXPO_PUBLIC_`; `.env` ter-commit sekarang atau di riwayat git |
+| 🗄️ **Database** | Petunjuk RLS dan policy Supabase diverifikasi terhadap exposure API dan grants, user bisa mengubah `is_admin` miliknya sendiri, policy yang percaya `user_metadata`; rules Firebase "test mode" atau terbuka; key service-role di kode browser |
 | 🔐 **Auth** | API route dan server action tanpa pengecekan di server, IDOR (bisa membaca data orang lain), admin cuma ditandai di client, auth yang hanya di middleware, `jwt.decode` tanpa verifikasi |
 | 💸 **Uang** | Panggilan AI dari browser (`dangerouslyAllowBrowser`), API berbayar tanpa rate limit ("denial of wallet"), harga diambil dari request, webhook Stripe / **Midtrans** / **Xendit** tidak diverifikasi, premium terbuka hanya dengan membuka URL sukses |
 | 🧱 **Input** | SQL injection, mass assignment, XSS lewat `dangerouslySetInnerHTML` dan output AI, SSRF, shell injection, prompt injection lewat tools |
@@ -126,7 +128,7 @@ Badge hanya untuk aplikasi yang GO. Badge "NO-GO" yang publik sama saja memberi 
 
 Alat keamanan tidak boleh jadi sumber masalah keamanan.
 
-- **Audit bersifat read-only.** Hanya menulis ke `.vibecheck/`, yang otomatis diabaikan git. Perbaikan hanya terjadi lewat `/vibecheck:fix`, setelah kamu setuju.
+- **Audit bersifat read-only.** Hanya menulis ke `.vibecheck/`, yang otomatis diabaikan git. Perbaikan hanya terjadi lewat `/vibecheck:fix`, setelah kamu setuju. Pengaturan dashboard dan hasil uji otorisasi deployment tetap `UNVERIFIED` sampai kamu memberikan bukti; laporan menyertakan langkah yang bisa kamu uji sendiri.
 - **Tanpa dependency, tanpa koneksi jaringan**, dan tidak pernah menjalankan kode proyekmu. Sekitar 1.000 baris JavaScript biasa yang bisa kamu baca dalam 15 menit.
 - **Secret selalu disamarkan** (`sk-p…9xQz`) di output, laporan dan pesan guard.
 - **Guard bersifat fail-open.** Kalau guard error, pekerjaanmu tetap jalan.

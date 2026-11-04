@@ -3,7 +3,7 @@
 > 2026-10-28 · mode: full · exposure: public · scanner 1.0.0 · stack: Next.js 15, Supabase, Stripe, OpenAI, Vercel
 > Keep this file private: it lists weaknesses. (`.vibecheck/` ignores itself in git.)
 >
-> *This is an example report for a fictional app, to show what vibecheck produces.*
+> *This is an example report for a fictional app, to show what vibecheck produces. Its assumed configuration exposes `public.messages` through the Data API, grants `anon` SELECT/UPDATE/DELETE, and has RLS disabled. These assumptions establish the example's critical data exposure; an RLS flag alone would be a lead to verify.*
 
 ## 🚦 Verdict: 🔴 NO-GO · 31/100 (F)
 
@@ -49,7 +49,7 @@ Right now, anyone can read every private message in your app and spend your Open
 
 - **Where:** `supabase/migrations/20260101000000_init.sql:6`, table `messages`
 - **What can happen:** anyone with your public anon key (it's in your front-end, which is normal) can download every message from every user, change them, or delete them all.
-- **Why:** the table is in the `public` schema without Row Level Security. Supabase's API exposes it fully.
+- **Why:** in this fictional setup, the Data API exposes `messages`, `anon` has SELECT/UPDATE/DELETE grants, and RLS is off. The public key itself is expected in browser code.
 - **Fix:** a new migration that enables RLS **and** adds owner policies in the same file (RLS without policies makes the app show empty lists).
 - **Fix prompt:**
   ```text
@@ -57,9 +57,11 @@ Right now, anyone can read every private message in your app and spend your Open
   enables row level security on public.messages and adds policies so authenticated
   users can select, insert, update and delete only rows where user_id = (select auth.uid()).
   Insert must use "with check". Don't change other tables. Then tell me how to apply it
-  and how to test as two different users that user A can't see user B's messages.
+  and how to test with synthetic records that a signed-out visitor can't read private
+  messages and user B can't read, update or delete user A's messages. Confirm the
+  record remains unchanged after denied writes and intended public data still works.
   ```
-- **Check yourself:** Supabase → Database → Advisors → Security should show no "RLS disabled in public" items after you apply it.
+- **Check yourself:** review API exposure, grants and policies after applying the migration, then run the signed-out/two-account checks. Deployed results remain `UNVERIFIED` until evidence is supplied.
 
 ### 🔴 VC-PAY-WEBHOOK-UNVERIFIED · Anyone can fake a payment
 
@@ -126,6 +128,7 @@ Right now, anyone can read every private message in your app and spend your Open
 - [ ] Rotate the OpenAI key (see VC-KEY-OPENAI)
 - [ ] OpenAI and Vercel spend limits are set
 - [ ] Supabase backups: Pro plan or a regular `supabase db dump`
+- [ ] UNVERIFIED: owner-run signed-out/two-account checks with synthetic messages confirm private reads, updates and deletes are blocked, while intended public data stays accessible
 
 ## ✅ What's already good
 

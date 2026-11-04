@@ -50,7 +50,10 @@
 
 ## ❔ Check these yourself (outside the code)
 
-- [ ] {{e.g. Supabase → Database → Advisors shows no "RLS disabled" warnings}}
+- [ ] {{If Supabase: confirm exposed API schemas and grants to anon/authenticated alongside RLS/policies; record dashboard evidence}}
+- [ ] {{UNVERIFIED until owner evidence: a signed-out request cannot read private synthetic records}}
+- [ ] {{UNVERIFIED until owner evidence: account B cannot read/update/delete account A's private synthetic record by changing its ID; verify writes leave it unchanged}}
+- [ ] {{UNVERIFIED until owner evidence: intentionally public data is accessible only for its intended operations/roles}}
 - [ ] {{e.g. Spend limit set at OpenAI (Settings → Limits) and Vercel (Spend Management)}}
 - [ ] {{e.g. Database backups enabled, and you know how to restore one}}
 - [ ] {{e.g. Revoked keys: list each leaked key that must be rotated}}

@@ -14,7 +14,7 @@ Severity guide:
 
 | ID | Check | Sev | How to verify / fix |
 |---|---|---|---|
-| ⚙ VC-KEY-* | No real API keys, private keys or DB passwords in tracked files | critical | Scanner. Fix: move to server env vars and **rotate the key** (deleting it from code doesn't help once it was pushed or deployed). |
+| ⚙ VC-KEY-* | No secret API keys, private keys or DB passwords in tracked files | critical | Scanner. Supabase publishable/anon keys are public by design; service-role and secret keys are private. Fix leaked secrets: move to server env vars and **rotate the key** (deleting it from code doesn't help once it was pushed or deployed). |
 | ⚙ VC-ENV-PUBLIC-SECRET | No secret behind a browser-public prefix (`NEXT_PUBLIC_`, `VITE_`, `REACT_APP_`, `EXPO_PUBLIC_`, `PUBLIC_`, `NUXT_PUBLIC_`) | critical | These are inlined into the JS bundle at build time. Rename, use server-side only, rotate. |
 | ⚙ VC-ENV-TRACKED / VC-ENV-HISTORY | `.env` files never committed, now or in history | critical | `git log --all -- .env` shows history. Rotate everything that was in it. |
 | ⚙ VC-ENV-GITIGNORE | `.gitignore` covers `.env*` (with `!.env.example`) | high | |
@@ -27,8 +27,8 @@ Severity guide:
 
 | ID | Check | Sev | How to verify / fix |
 |---|---|---|---|
-| ⚙ VC-DB-NO-RLS / VC-DB-RLS-DISABLED | Supabase: RLS enabled on **every** table in `public` | critical | Tables made in the dashboard won't be in migrations: ask the user to run the SQL in `stacks/supabase.md` or open Database → Advisors. |
-| ⚙ VC-DB-POLICY-OPEN | Policies are scoped to the owner, not `using (true)` | high | `to authenticated` only means "anyone who signed up". Public read is OK only for truly public content. |
+| ⚙ VC-DB-NO-RLS / VC-DB-RLS-DISABLED | Supabase: API-exposed private data has effective RLS and scoped grants | critical if private-data exposure is verified | Verify exposed schemas, grants to `anon`/`authenticated` and RLS together. A schema name or RLS flag alone doesn't prove access. Mark missing dashboard evidence `UNVERIFIED`; give the owner the SQL and access checks in `stacks/supabase.md`. |
+| ⚙ VC-DB-POLICY-OPEN | Policies allow only the intended rows and operations | high | Check target roles and grants too. `to authenticated` means any signed-up user; `using (true)` can permit every row. Public read is OK for intentionally public data. |
 | VC-DB-OWNER-WRITE | Insert/update policies have `with check` so users can't write rows as someone else | high | |
 | VC-DB-PRIV-COLUMNS | Users can't update their own `role`, `is_admin`, `plan`, `credits`, `balance`, `verified` | critical | Column grants or a separate table only the server writes. See `stacks/supabase.md`. |
 | ⚙ VC-DB-POLICY-USER-METADATA | Authorization never trusts `user_metadata` (users can edit it) | high | Use `app_metadata` or a roles table. |
@@ -43,7 +43,7 @@ Severity guide:
 | ID | Check | Sev | How to verify / fix |
 |---|---|---|---|
 | VC-AUTH-SERVER-CHECK | Every API route, server action and function that reads or writes user data verifies the session **on the server** | critical | Hiding a button in the UI is not protection. List every entry point and tick each one. |
-| VC-AUTH-IDOR | Handlers check that the record belongs to the caller (`where id = :id and user_id = :me`) | critical | Classic: `/api/invoices/[id]` returns any invoice for any id. |
+| VC-AUTH-IDOR | Handlers check that the record belongs to the caller (`where id = :id and user_id = :me`) | critical | Trace private reads and writes. Give the owner two-account checks with synthetic records; deployed results stay `UNVERIFIED` until evidence exists. See the Supabase guide for the steps. |
 | VC-AUTH-ADMIN | Admin pages and APIs check a server-side role, never a client flag, localStorage, query param or hidden route | critical | |
 | VC-AUTH-MIDDLEWARE-ONLY | Auth isn't enforced *only* in middleware or a layout | high | Next.js middleware can be bypassed (CVE-2025-29927) and layouts don't protect server actions. Check close to the data. |
 | ⚙ VC-AUTH-JWT-DECODE | JWTs are verified, not just decoded | high | |

@@ -69,12 +69,14 @@ Always read [references/checklist.md](references/checklist.md). Then read the st
 Work through the checklist areas for the chosen mode. In `full` and `security` mode, never skip these five:
 
 1. **Every server entry point.** List them all. For each one: does it check *on the server* who the user is? Does it check that the user owns the record they asked for (IDOR)? Does it validate input?
-2. **Every database policy or security rule.** "Logged in" is not "owner". `to authenticated using (true)` means anyone who signs up can read everything.
+2. **Every database policy or security rule.** "Logged in" is not "owner". For Supabase, verify API exposure, role grants and RLS/policies together using the stack guide. Keep confirmed private-data exposure critical; mark unproved exposure `UNVERIFIED` and give the owner the exact checks needed.
 3. **Self-upgrades.** Can a user make themselves admin, premium, or give themselves credits? Look for user-writable `role`, `is_admin`, `plan`, `credits` columns, premium flags kept on the client, and features unlocked by visiting a success URL.
 4. **Paid endpoints.** Can an anonymous user, or one user in a loop, call the AI/email/SMS endpoints thousands of times? Is there auth, a rate limit, a max-token cap, and a provider spend limit?
 5. **Secrets reaching the browser.** Public env prefixes, server modules imported into client components, SDKs created with secret keys in client code.
 
 Attackers think in flows, not files. Trace at least two flows end to end, for example "user A reads user B's data" and "a free user gets the paid feature".
+
+For Supabase, give the owner the [signed-out and two-account checks](references/stacks/supabase.md#owner-run-access-checks) with synthetic records. Deployed results stay `UNVERIFIED` until the owner provides evidence; source review and a successful SQL-editor query don't establish API authorization.
 
 ## Step 5: Score
 
@@ -124,7 +126,7 @@ Keep the chat summary short:
 3 critical · 2 high · 4 medium · 6 low · 2 to verify
 
 1. 🔴 Your OpenAI key is in the browser bundle: anyone can spend your credit. (src/lib/ai.ts:4)
-2. 🔴 The "messages" table has no RLS: anyone can read every message.
+2. 🔴 The API exposes private messages to the anon role without RLS: anyone can read them.
 3. 🔴 Stripe webhook isn't verified: anyone can fake a payment and unlock Pro.
 …
 Full report: .vibecheck/report.md

@@ -503,8 +503,8 @@ function analyzeSupabaseSql() {
       const enable = m[2].toLowerCase() === 'enable';
       if (t) t.rls = enable;
       if (!enable) {
-        add({ id: 'VC-DB-RLS-DISABLED', category: 'database', severity: 'critical', title: `RLS explicitly disabled on "${norm(m[1])}"`,
-          ...loc(m.index), fix: 'With RLS off, anyone holding your public anon key can read and change every row. Enable RLS and add owner policies.' });
+        add({ id: 'VC-DB-RLS-DISABLED', category: 'database', severity: 'critical', confidence: 'verify', title: `RLS explicitly disabled on "${norm(m[1])}"`,
+          ...loc(m.index), fix: 'Confirm whether the Data API exposes this schema and which table privileges anon/authenticated have. Without RLS, granted operations can reach every row. Enable RLS and appropriate policies for private data; verify deployed exposure and grants before reporting a public leak.' });
       }
     }
     for (const m of text.matchAll(new RegExp(`drop\\s+table\\s+(?:if\\s+exists\\s+)?${NAME}`, 'gi'))) tables.delete(norm(m[1]));
@@ -544,7 +544,7 @@ function analyzeSupabaseSql() {
     if (info.rls) continue;
     add({ id: 'VC-DB-NO-RLS', category: 'database', severity: 'critical', confidence: 'verify',
       title: `Table "${t}" has no Row Level Security in your migrations`, file: info.file, line: info.line, evidence: info.evidence,
-      fix: 'Without RLS, anyone with your public anon key can read and change every row (this is how Moltbook and many Lovable apps leaked). `alter table public.' + t + ' enable row level security;` plus owner policies. If you enabled it in the dashboard instead, confirm in Database → Advisors.' });
+      fix: 'Confirm whether the Data API exposes this table and which privileges anon/authenticated have. Without RLS, granted operations can reach every row. For private data, use `alter table public.' + t + ' enable row level security;` plus appropriate policies. If enabled in the dashboard instead, confirm in Database → Advisors and check deployed exposure and grants.' });
   }
 }
 

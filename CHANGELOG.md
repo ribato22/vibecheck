@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Recognized Supabase publishable keys and legacy anon JWTs no longer become generic secret leads; secret/service-role keys retain their existing detection and guard protections.
+- RLS-disabled leads require API exposure and role-grant verification before being treated as confirmed private-data exposure. Critical severity is retained; default CI excludes unverified leads, while `--strict` includes them.
+- Clarify Supabase public-key handling and access controls, and add owner-run signed-out/two-account checks to the guide and report. Deployed authorization results remain `UNVERIFIED` until evidence exists.
+
 ## 1.1.1 (2026-10-29)
 
 From the first `/vibecheck:deploy` run on a real app, a local-only Node.js demo. The raw preflight reported 6 high and 1 low, and all 7 had to be corrected by hand.

@@ -85,14 +85,27 @@ const DB_URL_RE =
   /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?):\/\/([^\s:@/'"`]+):([^\s@'"`]+)@([^\s/'"`:?#]+)/g;
 const DUMMY_PASSWORD = /^(?:pass(?:word)?|postgres|root|secret|admin|test|user|mysql|redis|guest|\$\{.*\}|\$\w+|%.*%|\{\{.*\}\})$/i;
 const GENERIC_RE =
-  /[\w-]*(?:secret|password|passwd|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret)[\w-]*["']?\s*[:=]\s*["'`]([^"'`\s]{12,})["'`]/i;
+  /[\w-]*(?:secret|password|passwd|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|private[_-]?key|client[_-]?secret)[\w-]*["']?\s*[:=]\s*["'`]([^"'`\s]{12,})["'`]/gi;
 
-export function jwtRole(token) {
+function jwtPart(token, index) {
   try {
-    return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'))?.role ?? null;
+    return JSON.parse(Buffer.from(token.split('.')[index], 'base64url').toString('utf8'));
   } catch {
     return null;
   }
+}
+
+export function jwtRole(token) {
+  return jwtPart(token, 1)?.role ?? null;
+}
+
+function isPublicSupabaseKey(value) {
+  if (/^sb_publishable_[A-Za-z0-9_-]{20,}$/.test(value)) return true;
+  if (!value.match(JWT_RE)?.includes(value)) return false;
+  if (value.split('.')[2].length !== 43) return false; // HS256 signs 32 bytes, encoded as 43 base64url characters.
+  const header = jwtPart(value, 0);
+  const payload = jwtPart(value, 1);
+  return header?.alg === 'HS256' && header.typ === 'JWT' && payload?.iss === 'supabase' && payload.role === 'anon';
 }
 
 function entropy(s) {
@@ -130,8 +143,11 @@ export function findSecrets(line, { guardOnly = false } = {}) {
     break;
   }
   if (!guardOnly && hits.length === 0) {
-    const m = GENERIC_RE.exec(line);
-    if (m && looksRandom(m[1]) && !isPlaceholder(m[1])) hits.push({ rule: GENERIC_RULE, value: m[1] });
+    for (const m of line.matchAll(GENERIC_RE)) {
+      if (!looksRandom(m[1]) || isPlaceholder(m[1]) || isPublicSupabaseKey(m[1])) continue;
+      hits.push({ rule: GENERIC_RULE, value: m[1] });
+      break;
+    }
   }
   return hits;
 }

@@ -37,6 +37,8 @@ export const keys = {
   aws: 'AK' + 'IA' + rand(16, 14, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'),
   serviceRole: [b64({ alg: 'HS256', typ: 'JWT' }), b64({ iss: 'supabase', ref: rand(20, 15).toLowerCase(), role: 'service_role', iat: 1700000000 }), rand(43, 16, ALNUM + '_-')].join('.'),
   anon: [b64({ alg: 'HS256', typ: 'JWT' }), b64({ iss: 'supabase', ref: rand(20, 17).toLowerCase(), role: 'anon', iat: 1700000000 }), rand(43, 18, ALNUM + '_-')].join('.'),
+  publishable: 'sb_' + 'publishable_' + rand(32, 21, ALNUM + '_-'),
+  supabaseSecret: 'sb_' + 'secret_' + rand(32, 22, ALNUM + '_-'),
   dbUrl: 'postgres' + 'ql://postgres.' + rand(12, 19).toLowerCase() + ':' + rand(20, 20) + '@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres',
 };
 
