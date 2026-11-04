@@ -108,7 +108,7 @@ Right now, anyone can read every private message in your app and spend your Open
 | ID | What | Where |
 |---|---|---|
 | VC-XSS-HTML | Admin panel renders HTML without sanitizing it | `src/components/AdminPanel.tsx:4` |
-| VC-DB-VIEW-BYPASS | View `leaderboard` ignores RLS | `supabase/migrations/…_init.sql:7` |
+| VC-DB-VIEW-BYPASS | Review view `leaderboard`'s owner privileges and API access (UNVERIFIED) | `supabase/migrations/…_init.sql:7` |
 | VC-CFG-HEADERS | No security headers | `next.config.js` |
 | VC-AUTH-MIDDLEWARE-ONLY | `/dashboard` is protected only in middleware | `middleware.ts:12` |
 
