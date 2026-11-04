@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.0 (2026-11-05)
+
 - Add configured custom-schema coverage from static Supabase `api.schemas` arrays, scoped to the closest project config while retaining `public` checks. Keep SQL object identity and RLS fixes schema-qualified; local configuration is not proof of deployed access.
 - Correct Storage guidance for public retrieval versus listing/write permissions, and add manual bucket/policy inventory plus signed-out/two-account synthetic file and signed-URL checks. Storage access remains unverified until the owner supplies deployed results.
 - View and SECURITY DEFINER leads now describe owner privileges conditionally and require verification of API exposure, effective grants and RLS behavior, rather than asserting public access or universal RLS bypass.
