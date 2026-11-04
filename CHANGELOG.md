@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- View and SECURITY DEFINER leads now describe owner privileges conditionally and require verification of API exposure, effective grants and RLS behavior, rather than asserting public access or universal RLS bypass.
+- Follow static CREATE/ALTER view and function security modes across ordered SQL files, including view RESET/replacement semantics and separate function input signatures. Ignore quoted SQL bodies and nested comments when reading these declarations; deployed state remains unverified.
 - Recognized Supabase publishable keys and legacy anon JWTs no longer become generic secret leads; secret/service-role keys retain their existing detection and guard protections.
 - RLS-disabled leads require API exposure and role-grant verification before being treated as confirmed private-data exposure. Critical severity is retained; default CI excludes unverified leads, while `--strict` includes them.
 - Clarify Supabase public-key handling and access controls, and add owner-run signed-out/two-account checks to the guide and report. Deployed authorization results remain `UNVERIFIED` until evidence exists.

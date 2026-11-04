@@ -32,7 +32,7 @@ Severity guide:
 | VC-DB-OWNER-WRITE | Insert/update policies have `with check` so users can't write rows as someone else | high | |
 | VC-DB-PRIV-COLUMNS | Users can't update their own `role`, `is_admin`, `plan`, `credits`, `balance`, `verified` | critical | Column grants or a separate table only the server writes. See `stacks/supabase.md`. |
 | ⚙ VC-DB-POLICY-USER-METADATA | Authorization never trusts `user_metadata` (users can edit it) | high | Use `app_metadata` or a roles table. |
-| ⚙ VC-DB-VIEW-BYPASS / VC-DB-SECURITY-DEFINER | Views use `security_invoker`; `security definer` functions check `auth.uid()` and aren't executable by `anon` | medium | |
+| ⚙ VC-DB-VIEW-BYPASS / VC-DB-SECURITY-DEFINER | Views and RPC functions permit only intended access | medium, verify | Review the final declared security mode, owner privileges/RLS, API exposure and effective SELECT/EXECUTE grants, including PUBLIC/inherited grants. For private data, check authorization inside definer functions. Use `security_invoker` when callers should use their own privileges; allow anonymous access only when intended. |
 | VC-DB-STORAGE | Storage buckets with private files are private, with per-user folder policies | high | Public bucket = anyone with the URL pattern can list or guess files. |
 | ⚙ VC-DB-FIREBASE-OPEN | Firestore/Storage/RTDB rules aren't open, aren't "test mode", and are owner-scoped | critical | |
 | ⚙ VC-DB-SERVICE-KEY-CLIENT | The admin/service key is only used server-side | critical | |

@@ -482,12 +482,81 @@ function analyzeFirebaseRules(rel, content) {
   }
 }
 
+// Mask SQL bodies/literals before splitting so their DDL words are never treated as migrations.
+function* sqlSecurityStatements(content) {
+  const tokens = /"(?:""|[^"])*"|[Ee]'(?:\\[\s\S]|''|[^'])*'|'(?:''|[^'])*'|\$([A-Za-z_]\w*|)\$[\s\S]*?\$\1\$|--[^\n]*|\/\*/g;
+  const parts = [];
+  let previous = 0, match;
+  while ((match = tokens.exec(content))) {
+    parts.push(content.slice(previous, match.index));
+    let token = match[0];
+    if (token === '/*') {
+      let depth = 1, end = tokens.lastIndex;
+      while (end < content.length && depth > 0) {
+        const pair = content.slice(end, end + 2);
+        if (pair === '/*') { depth++; end += 2; }
+        else if (pair === '*/') { depth--; end += 2; }
+        else end++;
+      }
+      token = content.slice(match.index, end);
+      tokens.lastIndex = end;
+    }
+    if (token.startsWith('"')) parts.push(token);
+    else if (/^'(?:true|on|yes|1|false|off|no|0)'$/i.test(token)) parts.push(' ' + token.slice(1, -1) + ' ');
+    else parts.push(token.replace(/[^\n]/g, ' '));
+    previous = tokens.lastIndex;
+  }
+  parts.push(content.slice(previous));
+  let offset = 0;
+  for (const part of parts.join('').split(';')) {
+    const first = part.search(/\S/);
+    if (first >= 0) yield { text: part.slice(first), index: offset + first };
+    offset += part.length + 1;
+  }
+}
+
+function sqlParenEnd(text, open) {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '(') depth++;
+    if (text[i] === ')' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+function sqlInputSignature(args) {
+  const types = [];
+  let start = 0, depth = 0;
+  for (let i = 0; i <= args.length; i++) {
+    if (args[i] === '(') depth++;
+    if (args[i] === ')') depth--;
+    if (i < args.length && (args[i] !== ',' || depth !== 0)) continue;
+    let arg = args.slice(start, i).trim();
+    start = i + 1;
+    if (!arg || /^out\b/i.test(arg)) continue;
+    arg = arg.replace(/^(?:inout|in|variadic)\s+/i, '').replace(/\s+default\b[\s\S]*$|=[\s\S]*$/i, '').trim();
+    // Input names do not identify overloads; retain multiword built-in type names.
+    if (!/^(?:double\s+precision|(?:character|bit)\s+varying|(?:timestamp|time)\s+(?:with|without)\s+time\s+zone|interval\s+(?:year|month|day|hour|minute|second))\b/i.test(arg)) {
+      arg = arg.replace(/^(?:"\w+"|\w+)\s+(?=[\w"])/, '');
+    }
+    types.push(arg.replace(/\s+/g, ' ').trim().replace(/"(?:""|[^"])*"|[^"]+/g,
+      (token) => token.startsWith('"') ? token : token.toLowerCase()));
+  }
+  return types.join(',');
+}
+
 function analyzeSupabaseSql() {
   sqlFiles.sort((a, b) => a.rel.localeCompare(b.rel));
   const NAME = '((?:"?\\w+"?\\.)?"?\\w+"?)';
   const norm = (n) => n.replace(/"/g, '').toLowerCase().replace(/^public\./, '');
   const isPublic = (n) => !n.replace(/"/g, '').includes('.') || /^"?public"?\./i.test(n);
   const tables = new Map(); // name -> { rel, line, rls }
+  const views = new Map();
+  const functions = new Map();
+  const securityName = (n) => {
+    const parts = n.split('.').map((p) => p.startsWith('"') ? p.slice(1, -1) : p.toLowerCase());
+    return parts.length === 1 ? 'public.' + parts[0] : parts.join('.');
+  };
 
   for (const { rel, content } of sqlFiles) {
     const text = blankComments(content, /--[^\n]*/g);
@@ -523,21 +592,55 @@ function analyzeSupabaseSql() {
         fix: '`true` matches every request ("to authenticated" only means "anyone who signed up"). Scope it: using ((select auth.uid()) = user_id). Fine only for truly public data like published blog posts.' });
     }
 
-    for (const m of text.matchAll(new RegExp(`create\\s+(?:or\\s+replace\\s+)?view\\s+${NAME}([\\s\\S]*?)\\bas\\b`, 'gi'))) {
-      if (!isPublic(m[1]) || /security_invoker\s*=\s*(?:true|on)/i.test(m[2])) continue;
-      add({ id: 'VC-DB-VIEW-BYPASS', category: 'database', severity: 'medium', confidence: 'verify',
-        title: `View "${norm(m[1])}" ignores the RLS of the tables it reads`, ...loc(m.index),
-        fix: 'Views run with their owner\'s rights by default. Create it `with (security_invoker = true)` or move it out of the public schema.' });
-    }
+    for (const statement of sqlSecurityStatements(content)) {
+      const view = new RegExp(`^(create(?:\\s+or\\s+replace)?|alter)\\s+view\\s+(?:if\\s+exists\\s+)?${NAME}([\\s\\S]*)$`, 'i').exec(statement.text);
+      if (view) {
+        const name = securityName(view[2]);
+        if (!name.startsWith('public.')) continue;
+        const create = /^create/i.test(view[1]);
+        const options = (create ? /\bwith\s*\(([^)]*)\)\s*as\b/i : /^\s*(?:set|reset)\s*\(([^)]*)\)/i).exec(view[3])?.[1] ?? '';
+        const invoker = /(?:^|,)\s*"?security_invoker"?\s*=\s*(true|on|yes|1|false|off|no|0)\s*(?=,|$)/i.exec(options);
+        const reset = !create && /^\s*reset\b/i.test(view[3]) && /(?:^|,)\s*"?security_invoker"?\s*(?=,|$)/i.test(options);
+        const fresh = create && !/\bor\s+replace\b/i.test(view[1]);
+        if (invoker || reset || create && (fresh || !views.has(name))) {
+          views.set(name, { invoker: invoker ? /^(?:true|on|yes|1)$/i.test(invoker[1]) : false, ...loc(statement.index) });
+        }
+        continue;
+      }
 
-    const fnStarts = [...text.matchAll(new RegExp(`create\\s+(?:or\\s+replace\\s+)?function\\s+${NAME}`, 'gi'))];
-    for (const m of text.matchAll(/security\s+definer/gi)) {
-      const fn = fnStarts.filter((f) => f.index < m.index).pop();
-      if (!fn || !isPublic(fn[1]) || /returns\s+trigger/i.test(text.slice(fn.index, m.index))) continue;
-      add({ id: 'VC-DB-SECURITY-DEFINER', category: 'database', severity: 'medium', confidence: 'verify',
-        title: `Function "${norm(fn[1])}" is SECURITY DEFINER and callable from the API`, ...loc(fn.index),
-        fix: 'It runs with admin rights and skips RLS. Check auth.uid() inside it, `set search_path = \'\'`, and `revoke execute on function ... from anon, public` if the browser should not call it.' });
+      const fn = new RegExp(`^(create(?:\\s+or\\s+replace)?|alter)\\s+function\\s+${NAME}\\s*\\(`, 'i').exec(statement.text);
+      if (!fn) continue;
+      const name = securityName(fn[2]);
+      if (!name.startsWith('public.')) continue;
+      const open = fn[0].lastIndexOf('(');
+      const close = sqlParenEnd(statement.text, open);
+      if (close < 0) continue;
+      const key = name + '(' + sqlInputSignature(statement.text.slice(open + 1, close)) + ')';
+      const attributes = statement.text.slice(close + 1).replace(/"(?:""|[^"])*"/g, (token) => token.replace(/[^\n]/g, ' '));
+      const create = /^create/i.test(fn[1]);
+      const mode = /\bsecurity\s+(definer|invoker)\b/i.exec(attributes);
+      if (!create && !mode) continue;
+      functions.set(key, {
+        name, definer: mode?.[1].toLowerCase() === 'definer',
+        trigger: create ? /\breturns\s+(?:event_)?trigger\b/i.test(attributes) : functions.get(key)?.trigger,
+        ...loc(statement.index),
+      });
     }
+  }
+
+  for (const [name, info] of views) {
+    if (info.invoker) continue;
+    add({ id: 'VC-DB-VIEW-BYPASS', category: 'database', severity: 'medium', confidence: 'verify',
+      title: `View "${name.slice(7)}" uses owner privileges; verify RLS and API access`,
+      file: info.file, line: info.line, evidence: info.evidence,
+      fix: 'Views normally use their owner\'s privileges and RLS context. Verify API exposure, effective SELECT grants and the owner\'s RLS privileges before claiming a bypass or public access. On Postgres 15+, use security_invoker = true when callers should use their own privileges.' });
+  }
+  for (const info of functions.values()) {
+    if (!info.definer || info.trigger) continue;
+    add({ id: 'VC-DB-SECURITY-DEFINER', category: 'database', severity: 'medium', confidence: 'verify',
+      title: `Function "${info.name.slice(7)}" is SECURITY DEFINER; verify owner privileges and API access`,
+      file: info.file, line: info.line, evidence: info.evidence,
+      fix: 'It runs with its owner\'s privileges; RLS bypass depends on that owner and the tables accessed. Verify API exposure, effective EXECUTE grants (including PUBLIC/inherited grants), owner RLS privileges and authorization inside the function. Set search_path = \'\', schema-qualify references and limit EXECUTE to intended roles.' });
   }
 
   for (const [t, info] of tables) {

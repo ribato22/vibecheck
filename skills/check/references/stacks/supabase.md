@@ -83,8 +83,8 @@ Or keep entitlements in a separate table that only the server (service role, or 
 
 ## Other checks
 
-- **Views** normally run with their owner's rights and may bypass underlying RLS. Check API exposure and grants; use `create view … with (security_invoker = true)` (Postgres 15+) when callers should use their own privileges.
-- **Functions** in exposed schemas are callable via `/rest/v1/rpc/` when the API role has EXECUTE privilege, including grants inherited from `PUBLIC`. For `security definer` functions: check `auth.uid()` inside, add `set search_path = ''`, and `revoke execute on function public.fn from anon, public;` unless anonymous use is intended.
+- **Views** normally use their owner's privileges and RLS context for underlying tables. Verify the owner's RLS privileges, API exposure and effective SELECT grants before concluding that a view bypasses RLS or exposes private rows. Use `create view … with (security_invoker = true)` (Postgres 15+) when callers should use their own privileges.
+- **Functions** eligible for RPC in exposed schemas may be callable via `/rest/v1/rpc/` when the API role has the required schema and EXECUTE privileges, including PUBLIC/inherited grants. `security definer` uses the function owner's privileges; RLS bypass depends on that owner and the tables accessed. For private data, verify authorization inside the function, such as ownership checks using `auth.uid()`. Pin `search_path = ''`, schema-qualify references and limit EXECUTE to intended roles, allowing anonymous use only when intended.
 - **Storage**: private buckets for private files. Per-user folders:
   `create policy "own files" on storage.objects for all to authenticated using (bucket_id = 'docs' and (storage.foldername(name))[1] = (select auth.uid())::text);`
 - **Edge Functions**: keep JWT verification on unless the function is a public webhook (then verify the webhook signature). Store secrets with `supabase secrets set`, not in code.
@@ -92,6 +92,8 @@ Or keep entitlements in a separate table that only the server (service role, or 
 - **Realtime**: broadcast/presence channels and Postgres Changes respect RLS only if configured. Check for private channels.
 - **Backups**: daily backups come with paid plans; add PITR for anything with paying users. Free projects pause when idle and don't include backups, so export regularly with `supabase db dump`.
 - **Spend cap**: keep it on, or set billing alerts, before a launch spike.
+
+The scanner follows straightforward static CREATE/ALTER security-mode declarations in lexical SQL-file and statement order, keeping function input signatures separate. It reads the declared source state, not an execution log: dynamic SQL, unusual signatures/type aliases, name resolution and dashboard-only changes still require manual review. Both view and definer findings remain `verify` leads until effective access is checked. A grant revocation alone does not establish that no inherited access remains.
 
 ## Server code
 

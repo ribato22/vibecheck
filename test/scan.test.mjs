@@ -173,6 +173,266 @@ test('RLS leads do not fail default CI before verification but still fail strict
   }
 });
 
+const privateNotesSql = 'create table public.notes (id int, body text);\nalter table public.notes enable row level security;\n';
+
+test('Supabase views stop warning after ALTER VIEW enables invoker mode', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + 'create view public.note_view as select * from public.notes;\n',
+    'supabase/migrations/002.sql': 'alter view public.note_view set (security_invoker = true);\n',
+  });
+  try {
+    assert.deepEqual(scan(dir).findings.filter((f) => f.id === 'VC-DB-VIEW-BYPASS'), []);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase views warn after ALTER VIEW disables invoker mode', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + 'create view public.note_view with (security_invoker = true) as select * from public.notes;\n',
+    'supabase/migrations/002.sql': 'alter view public.note_view set (security_invoker = false);\n',
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-VIEW-BYPASS');
+    assert.deepEqual(found.map((f) => [f.file, f.line, f.confidence]), [['supabase/migrations/002.sql', 1, 'verify']]);
+    assert.match(found[0].title, /note_view/);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase views warn when ALTER VIEW resets invoker mode', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + 'create view public.note_view with (security_invoker = true) as select * from public.notes;\n',
+    'supabase/migrations/002.sql': 'alter view public.note_view reset (security_invoker);\n',
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-VIEW-BYPASS');
+    assert.deepEqual(found.map((f) => [f.file, f.line, f.confidence]), [['supabase/migrations/002.sql', 1, 'verify']]);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase views preserve invoker mode when CREATE OR REPLACE omits options', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + 'create view public.note_view with (security_invoker = true) as select * from public.notes;\n',
+    'supabase/migrations/002.sql': 'create or replace view public.note_view as select * from public.notes where id > 0;\n',
+  });
+  try {
+    assert.deepEqual(scan(dir).findings.filter((f) => f.id === 'VC-DB-VIEW-BYPASS'), []);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase views follow explicit invoker options in CREATE OR REPLACE', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + 'create view public.note_view as select * from public.notes;\n',
+    'supabase/migrations/002.sql': 'create or replace view public.note_view with (security_invoker = true) as select * from public.notes;\n',
+  });
+  try {
+    assert.deepEqual(scan(dir).findings.filter((f) => f.id === 'VC-DB-VIEW-BYPASS'), []);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase functions stop warning after ALTER FUNCTION switches to invoker', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + 'create function public.read_notes() returns setof public.notes language sql security definer set search_path = \'\' as $$ select * from public.notes $$;\n',
+    'supabase/migrations/002.sql': 'alter function public.read_notes() security invoker;\n',
+  });
+  try {
+    assert.deepEqual(scan(dir).findings.filter((f) => f.id === 'VC-DB-SECURITY-DEFINER'), []);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase functions warn after ALTER FUNCTION switches to definer', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + 'create function public.read_notes() returns setof public.notes language sql security invoker set search_path = \'\' as $$ select * from public.notes $$;\n',
+    'supabase/migrations/002.sql': 'alter function public.read_notes() security definer;\n',
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-SECURITY-DEFINER');
+    assert.deepEqual(found.map((f) => [f.file, f.line, f.confidence]), [['supabase/migrations/002.sql', 1, 'verify']]);
+    assert.match(found[0].title, /read_notes/);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase functions default to invoker when CREATE OR REPLACE omits SECURITY', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + 'create function public.read_notes() returns setof public.notes language sql security definer as $$ select * from public.notes $$;\n',
+    'supabase/migrations/002.sql': 'create or replace function public.read_notes() returns setof public.notes language sql as $$ select * from public.notes $$;\n',
+  });
+  try {
+    assert.deepEqual(scan(dir).findings.filter((f) => f.id === 'VC-DB-SECURITY-DEFINER'), []);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase function overloads keep separate declared security modes', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': [
+      'create function public.read_notes(note_id integer) returns integer language sql security definer as $$ select note_id $$;',
+      'create function public.read_notes(note_key text) returns text language sql security definer as $$ select note_key $$;',
+    ].join('\n'),
+    'supabase/migrations/002.sql': 'alter function public.read_notes(integer) security invoker;\n',
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-SECURITY-DEFINER');
+    assert.deepEqual(found.map((f) => [f.file, f.line, f.confidence]), [['supabase/migrations/001.sql', 2, 'verify']]);
+    assert.match(found[0].title, /read_notes/);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase function bodies cannot change top-level view or function security state', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + [
+      'create function public.read_notes() returns integer language sql security invoker as $$ select 1 $$;',
+      'create function public.describe_sql() returns text language plpgsql security invoker as $body$',
+      'begin',
+      '  perform \'alter function public.read_notes() security definer;\';',
+      '  return $example$create view public.fake_view as select * from public.notes;$example$;',
+      'end;',
+      '$body$;',
+    ].join('\n'),
+  });
+  try {
+    assert.deepEqual(scan(dir).findings.filter((f) => ['VC-DB-VIEW-BYPASS', 'VC-DB-SECURITY-DEFINER'].includes(f.id)), []);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase same-file security transitions keep source order and final ALTER locations', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + [
+      'create view public.note_view with (security_invoker = true) as select * from public.notes;',
+      'alter view public.note_view set (security_invoker = false);',
+      'alter view public.note_view set (security_invoker = true);',
+      'alter view public.note_view set (security_invoker = false);',
+      'create function public.read_notes() returns integer language sql security invoker as $$ select 1 $$;',
+      'alter function public.read_notes() security definer;',
+      'alter function public.read_notes() security invoker;',
+      'alter function public.read_notes() security definer;',
+    ].join('\n'),
+  });
+  try {
+    const found = scan(dir).findings;
+    const views = found.filter((f) => f.id === 'VC-DB-VIEW-BYPASS');
+    const functions = found.filter((f) => f.id === 'VC-DB-SECURITY-DEFINER');
+    assert.deepEqual(views.map((f) => [f.file, f.line, f.confidence]), [['supabase/migrations/001.sql', 6, 'verify']]);
+    assert.deepEqual(functions.map((f) => [f.file, f.line, f.confidence]), [['supabase/migrations/001.sql', 10, 'verify']]);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase views reset omitted options on a fresh CREATE after DROP', () => {
+  const dir = makeProject({ 'supabase/migrations/001.sql': [
+    'create view public.note_view with (security_invoker = true) as select 1;',
+    'drop view public.note_view;',
+    'create view public.note_view as select 1;',
+  ].join('\n') });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-VIEW-BYPASS');
+    assert.deepEqual(found.map((f) => [f.line, f.confidence]), [[3, 'verify']]);
+  } finally { removeProject(dir); }
+});
+
+test('Supabase views recognize quoted and numeric invoker booleans', () => {
+  const dir = makeProject({ 'supabase/migrations/001.sql': [
+    'create view public.quoted_value with (security_invoker = true) as select 1;',
+    "alter view public.quoted_value set (security_invoker = 'false');",
+    'create view public.numeric_value with (security_invoker = true) as select 1;',
+    'alter view public.numeric_value set (security_invoker = 0);',
+    'create view public.enabled_value as select 1;',
+    "alter view public.enabled_value set (security_invoker = 'true');",
+  ].join('\n') });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-VIEW-BYPASS');
+    assert.deepEqual(found.map((f) => [f.line, f.confidence]), [[2, 'verify'], [4, 'verify']]);
+  } finally { removeProject(dir); }
+});
+
+test('Supabase function overloads preserve quoted input type identity', () => {
+  const dir = makeProject({ 'supabase/migrations/001.sql': [
+    'create type public."CaseType" as enum (\'a\');',
+    'create type public."casetype" as enum (\'a\');',
+    'create function public.read_notes(value public."CaseType") returns integer language sql security definer as $$ select 1 $$;',
+    'create function public.read_notes(value public."casetype") returns integer language sql security definer as $$ select 1 $$;',
+    'alter function public.read_notes(public."casetype") security invoker;',
+  ].join('\n') });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-SECURITY-DEFINER');
+    assert.deepEqual(found.map((f) => [f.line, f.confidence]), [[3, 'verify']]);
+  } finally { removeProject(dir); }
+});
+
+test('Supabase functions ignore quoted result-column names when reading security mode', () => {
+  const dir = makeProject({ 'supabase/migrations/001.sql':
+    'create function public.note_values() returns table ("security invoker" text) language sql security definer as $$ select \'x\' $$;' });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-SECURITY-DEFINER');
+    assert.deepEqual(found.map((f) => [f.line, f.confidence]), [[1, 'verify']]);
+  } finally { removeProject(dir); }
+});
+
+test('Supabase functions remain visible after nested SQL block comments', () => {
+  const dir = makeProject({ 'supabase/migrations/001.sql': [
+    '/* outer comment',
+    ' /* nested comment */',
+    ' still outer */',
+    'create function public.read_label() returns integer language sql security definer as $$ select 1 $$;',
+  ].join('\n') });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-SECURITY-DEFINER');
+    assert.deepEqual(found.map((f) => [f.line, f.confidence]), [[4, 'verify']]);
+  } finally { removeProject(dir); }
+});
+
+test('Supabase view and definer leads stay conditional despite revokes and a non-admin owner', () => {
+  const dir = makeProject({
+    'supabase/migrations/001.sql': privateNotesSql + [
+      'create role app_reader nologin nosuperuser nobypassrls;',
+      'grant usage on schema public to app_reader;',
+      'grant select on public.notes to app_reader;',
+      'create view public.note_view as select * from public.notes;',
+      'revoke all on public.note_view from public, anon, authenticated;',
+      'create function public.read_notes() returns setof public.notes language sql security definer set search_path = \'\' as $$ select * from public.notes $$;',
+      'alter function public.read_notes() owner to app_reader;',
+      'revoke all on function public.read_notes() from public, anon, authenticated;',
+    ].join('\n'),
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => ['VC-DB-VIEW-BYPASS', 'VC-DB-SECURITY-DEFINER'].includes(f.id));
+    assert.equal(found.length, 2, 'review leads remain without claiming effective exposure or elevated owner privileges');
+    assert.ok(found.every((f) => f.severity === 'medium' && f.confidence === 'verify'));
+    const view = found.find((f) => f.id === 'VC-DB-VIEW-BYPASS');
+    const fn = found.find((f) => f.id === 'VC-DB-SECURITY-DEFINER');
+    assert.doesNotMatch(view.title, /ignores (?:the )?RLS/i);
+    assert.doesNotMatch(fn.title, /callable from (?:the )?API/i);
+    assert.doesNotMatch(fn.fix, /runs with admin rights|and skips RLS/i);
+    for (const finding of found) {
+      const message = `${finding.title} ${finding.fix}`;
+      assert.match(message, /\b(?:verify|confirm|check)\b/i);
+      assert.match(message, /\b(?:expos\w*|API)\b/i);
+      assert.match(message, /\b(?:grant\w*|privilege\w*)\b/i);
+      assert.match(message, /\bowner(?:'s)?\b/i);
+    }
+  } finally {
+    removeProject(dir);
+  }
+});
+
 test('catches .env files committed now or in the past', () => {
   const dir = makeProject({ 'index.js': 'console.log(process.env.X)\n', '.env.production': `OPENAI_API_KEY=${keys.openai}\n`, '.env.old': 'A=1\n' });
   try {
