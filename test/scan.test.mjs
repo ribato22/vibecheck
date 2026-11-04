@@ -645,3 +645,230 @@ test('files in skipped folders that app code imports are checked like app code',
     removeProject(dir);
   }
 });
+
+const schemaLeadIds = ['VC-DB-NO-RLS', 'VC-DB-VIEW-BYPASS', 'VC-DB-SECURITY-DEFINER'];
+
+test('Supabase configured schemas include mixed-quote multiline API entries', () => {
+  const dir = makeProject({
+    'supabase/config.toml': '[api]\nschemas = [\n  \'api\', # application API\n  "reporting", # read models\n]\n',
+    'supabase/migrations/001.sql': [
+      'create table api.notes (id int);',
+      'create view api.note_view as select * from api.notes;',
+      'create function api.read_notes() returns setof api.notes language sql security definer as $$ select * from api.notes $$;',
+      'create table reporting.events (id int);',
+    ].join('\n'),
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => schemaLeadIds.includes(f.id)).sort((a, b) => a.line - b.line);
+    assert.deepEqual(found.map((f) => [f.id, f.line, f.confidence]), [
+      ['VC-DB-NO-RLS', 1, 'verify'],
+      ['VC-DB-VIEW-BYPASS', 2, 'verify'],
+      ['VC-DB-SECURITY-DEFINER', 3, 'verify'],
+      ['VC-DB-NO-RLS', 4, 'verify'],
+    ]);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase configured schemas keep table RLS state and fixes qualified', () => {
+  const dir = makeProject({
+    'supabase/config.toml': '[api]\nschemas = ["api"]\n',
+    'supabase/migrations/001.sql': [
+      'create table api.notes (id int);',
+      'create table private.notes (id int);',
+      'alter table private.notes enable row level security;',
+    ].join('\n'),
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-NO-RLS');
+    assert.deepEqual(found.map((f) => [f.file, f.line, f.confidence]), [['supabase/migrations/001.sql', 1, 'verify']]);
+    assert.match(found[0].fix, /alter\s+table\s+(?:"api"|api)\.(?:"notes"|notes)\s+enable\s+row\s+level\s+security/i);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase configured schemas preserve custom view and function ALTER modes', () => {
+  const dir = makeProject({
+    'supabase/config.toml': '[api]\nschemas = ["api"]\n',
+    'supabase/migrations/001.sql': [
+      'create view api.safe_view as select 1 as value;',
+      'create view api.review_view with (security_invoker = true) as select 1 as value;',
+      'create function api.safe_fn() returns integer language sql security definer as $$ select 1 $$;',
+      'create function api.review_fn() returns integer language sql security invoker as $$ select 1 $$;',
+    ].join('\n'),
+    'supabase/migrations/002.sql': [
+      'alter view api.safe_view set (security_invoker = true);',
+      'alter view api.review_view set (security_invoker = false);',
+      'alter function api.safe_fn() security invoker;',
+      'alter function api.review_fn() security definer;',
+    ].join('\n'),
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => schemaLeadIds.includes(f.id)).sort((a, b) => a.line - b.line);
+    assert.deepEqual(found.map((f) => [f.id, f.file, f.line, f.confidence]), [
+      ['VC-DB-VIEW-BYPASS', 'supabase/migrations/002.sql', 2, 'verify'],
+      ['VC-DB-SECURITY-DEFINER', 'supabase/migrations/002.sql', 4, 'verify'],
+    ]);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase configured schemas retain public and ignore unrelated config fields', () => {
+  const dir = makeProject({
+    'supabase/config.toml': '[api]\nschemas = ["api"]\nextra_search_path = ["extra"]\n[other]\nschemas = ["private"]\n',
+    'supabase/migrations/001.sql': ['public', 'private', 'extra'].flatMap((schema) => [
+      `create table ${schema}.notes (id int);`,
+      `create view ${schema}.note_view as select * from ${schema}.notes;`,
+      `create function ${schema}.read_notes() returns setof ${schema}.notes language sql security definer as $$ select * from ${schema}.notes $$;`,
+    ]).join('\n'),
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => schemaLeadIds.includes(f.id)).sort((a, b) => a.line - b.line);
+    assert.deepEqual(found.map((f) => [f.id, f.line, f.confidence]), [
+      ['VC-DB-NO-RLS', 1, 'verify'],
+      ['VC-DB-VIEW-BYPASS', 2, 'verify'],
+      ['VC-DB-SECURITY-DEFINER', 3, 'verify'],
+    ]);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase configured schemas report manual coverage for malformed or dynamic arrays', () => {
+  for (const config of ['[api]\nschemas = ["api"\n', '[api]\nschemas = env("API_SCHEMAS")\n']) {
+    const dir = makeProject({
+      'supabase/config.toml': config,
+      'supabase/migrations/001.sql': 'create table public.notes (id int);\ncreate table api.notes (id int);\n',
+    });
+    try {
+      const report = scan(dir);
+      assert.equal(report.exitCode, 0);
+      assert.deepEqual(report.findings.filter((f) => f.id === 'VC-DB-NO-RLS').map((f) => f.line), [1]);
+      assert.ok(report.notes.some((note) => /config\.toml/.test(note) && /manual|unverified/i.test(note)), JSON.stringify(report.notes));
+    } finally {
+      removeProject(dir);
+    }
+  }
+});
+
+test('Supabase configured schemas use the closest project config and root fallback', () => {
+  const dir = makeProject({
+    'supabase/config.toml': '[api]\nschemas = ["root_api"]\n',
+    'supabase/migrations/001.sql': 'create table root_api.root_notes (id int);\ncreate table a_api.root_hidden (id int);\n',
+    'apps/a/supabase/config.toml': '[api]\nschemas = ["a_api"]\n',
+    'apps/a/supabase/migrations/001.sql': 'create table a_api.a_notes (id int);\ncreate table root_api.a_hidden (id int);\n',
+    'apps/b/supabase/migrations/001.sql': 'create table root_api.b_notes (id int);\ncreate table a_api.b_hidden (id int);\n',
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-NO-RLS').sort((a, b) => a.file.localeCompare(b.file));
+    assert.deepEqual(found.map((f) => [f.file, f.line, f.confidence]), [
+      ['apps/a/supabase/migrations/001.sql', 1, 'verify'],
+      ['apps/b/supabase/migrations/001.sql', 1, 'verify'],
+      ['supabase/migrations/001.sql', 1, 'verify'],
+    ]);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase configured schemas preserve quoted schema case', () => {
+  const dir = makeProject({
+    'supabase/config.toml': '[api]\nschemas = ["CamelCase", "Api.Space", "select"]\n',
+    'supabase/migrations/001.sql': [
+      'create table "CamelCase".notes (id int);',
+      'create table camelcase.hidden_notes (id int);',
+      'create view "CamelCase".note_view as select * from "CamelCase".notes;',
+      'create view camelcase.hidden_view as select 1 as value;',
+      'create function "CamelCase".read_notes() returns integer language sql security definer as $$ select 1 $$;',
+      'create function camelcase.hidden_fn() returns integer language sql security definer as $$ select 1 $$;',
+      'create table "Api.Space".dot_notes (id int);',
+      'create view "Api.Space".dot_view as select * from "Api.Space".dot_notes;',
+      'create function "Api.Space".read_dot_notes() returns integer language sql security definer as $$ select 1 $$;',
+      'create table "select".reserved_notes (id int);',
+    ].join('\n'),
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => schemaLeadIds.includes(f.id)).sort((a, b) => a.line - b.line);
+    assert.deepEqual(found.map((f) => [f.id, f.line, f.confidence]), [
+      ['VC-DB-NO-RLS', 1, 'verify'],
+      ['VC-DB-VIEW-BYPASS', 3, 'verify'],
+      ['VC-DB-SECURITY-DEFINER', 5, 'verify'],
+      ['VC-DB-NO-RLS', 7, 'verify'],
+      ['VC-DB-VIEW-BYPASS', 8, 'verify'],
+      ['VC-DB-SECURITY-DEFINER', 9, 'verify'],
+      ['VC-DB-NO-RLS', 10, 'verify'],
+    ]);
+    assert.match(found[0].fix, /"CamelCase"\.(?:"notes"|notes)/);
+    assert.match(found[1].title, /CamelCase.*note_view/);
+    assert.match(found[2].title, /CamelCase.*read_notes/);
+    assert.match(found[3].fix, /"Api\.Space"\.(?:"dot_notes"|dot_notes)/);
+    assert.match(found[4].title, /Api\.Space.*dot_view/);
+    assert.match(found[5].title, /Api\.Space.*read_dot_notes/);
+    assert.match(found[6].fix, /"select"\.(?:"reserved_notes"|reserved_notes)/);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase configured schemas accept root dotted api.schemas without other sections', () => {
+  const dir = makeProject({
+    'supabase/config.toml': 'api.schemas = [\'api\']\n[other]\nschemas = ["private"]\n',
+    'supabase/migrations/001.sql': 'create table api.notes (id int);\ncreate table private.notes (id int);\n',
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-NO-RLS');
+    assert.deepEqual(found.map((f) => [f.line, f.confidence]), [[1, 'verify']]);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase configured schemas reject long malformed arrays within a bounded time', () => {
+  const dir = makeProject({
+    'supabase/config.toml': '[api]\nschemas = ["api"' + ' '.repeat(300000) + '\n',
+    'supabase/migrations/001.sql': 'create table public.notes (id int);\n',
+  });
+  try {
+    const result = spawnSync(process.execPath, [SCAN, dir, '--json'], {
+      encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL',
+    });
+    assert.equal(result.error?.code, undefined, 'malformed config must finish within the generous scanner timeout');
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.notes.some((note) => /config\.toml/.test(note) && /manual|unverified/i.test(note)), JSON.stringify(report.notes));
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase configured schemas stop API scope at array-table headers', () => {
+  const dir = makeProject({
+    'supabase/config.toml': '[api]\nenabled = true\n[[other]]\nschemas = ["private"]\n',
+    'supabase/migrations/001.sql': 'create table public.notes (id int);\ncreate table private.notes (id int);\n',
+  });
+  try {
+    const found = scan(dir).findings.filter((f) => f.id === 'VC-DB-NO-RLS');
+    assert.deepEqual(found.map((f) => [f.line, f.confidence]), [[1, 'verify']]);
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('Supabase configured schemas accept quoted and spaced root dotted keys', () => {
+  const observed = [];
+  for (const key of ['"api" . "schemas"', 'api . schemas', "'api' . 'schemas'"]) {
+    const dir = makeProject({
+      'supabase/config.toml': key + ' = ["api"]\n[other]\nschemas = ["private"]\n',
+      'supabase/migrations/001.sql': 'create table api.notes (id int);\ncreate table private.notes (id int);\n',
+    });
+    try {
+      observed.push(scan(dir).findings.filter((f) => f.id === 'VC-DB-NO-RLS').map((f) => [f.line, f.confidence]));
+    } finally {
+      removeProject(dir);
+    }
+  }
+  assert.deepEqual(observed, [[[1, 'verify']], [[1, 'verify']], [[1, 'verify']]]);
+});

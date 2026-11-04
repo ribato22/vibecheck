@@ -545,18 +545,69 @@ function sqlInputSignature(args) {
   return types.join(',');
 }
 
-function analyzeSupabaseSql() {
+function supabaseSchemas(config) {
+  const schemas = new Set(['public']);
+  const source = readText(config);
+  if (source === null || Buffer.byteLength(source) > MAX_FILE_BYTES) {
+    notes.push('Cannot read ' + config + '; custom schema coverage needs manual review.');
+    return schemas;
+  }
+  // shortcut: only static string arrays, extend when another valid config form needs coverage.
+  const text = source.replace(/"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*'|#[^\r\n]*/g,
+    (token) => token.startsWith('#') || token.startsWith('"""') || token.startsWith("'''") ? token.replace(/[^\r\n]/g, ' ') : token);
+  const sections = [...text.matchAll(/^[ \t]*\[(\[[^\]\r\n]+\]|[^\]\r\n]+)\][ \t]*\r?$/gm)];
+  const rootText = text.slice(0, sections[0]?.index ?? text.length);
+  const api = sections.find((m) => /^(?:api|"api"|'api')$/.test(m[1].trim()));
+  const apiText = api ? text.slice(api.index + api[0].length, sections[sections.indexOf(api) + 1]?.index ?? text.length) : '';
+  const rootAssignment = /^[ \t]*(?:api|"api"|'api')[ \t]*\.[ \t]*(?:schemas|"schemas"|'schemas')[ \t]*=[ \t]*/m.exec(rootText);
+  const assignment = rootAssignment || /^[ \t]*(?:schemas|"schemas"|'schemas')[ \t]*=[ \t]*/m.exec(apiText);
+  if (assignment) {
+    const block = rootAssignment ? rootText : apiText;
+    const value = block.slice(assignment.index + assignment[0].length).trimStart();
+    const string = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')`;
+    try {
+      if (value[0] !== '[') throw new Error('not a literal string array');
+      const item = new RegExp('\\s*(' + string + ')\\s*([,\\]])', 'y');
+      const end = /\s*\]/y;
+      let cursor = 1;
+      for (;;) {
+        end.lastIndex = cursor;
+        if (end.exec(value)) { cursor = end.lastIndex; break; }
+        item.lastIndex = cursor;
+        const m = item.exec(value);
+        if (!m) throw new Error('not a literal string array');
+        schemas.add(m[1].startsWith('"') ? JSON.parse(m[1]) : m[1].slice(1, -1));
+        cursor = item.lastIndex;
+        if (m[2] === ']') break;
+      }
+      if (!/^[ \t]*(?:\r?\n|$)/.test(value.slice(cursor))) throw new Error('unexpected array suffix');
+    } catch {
+      notes.push('Cannot parse static api.schemas in ' + config + '; custom schema coverage needs manual review (public retained).');
+      return new Set(['public']);
+    }
+  }
+  notes.push('Supabase schema coverage uses local/source config ' + config + '; verify deployed API exposure and effective grants manually.');
+  return schemas;
+}
+
+function analyzeSupabaseSql(sqlFiles, exposedSchemas) {
   sqlFiles.sort((a, b) => a.rel.localeCompare(b.rel));
-  const NAME = '((?:"?\\w+"?\\.)?"?\\w+"?)';
-  const norm = (n) => n.replace(/"/g, '').toLowerCase().replace(/^public\./, '');
-  const isPublic = (n) => !n.replace(/"/g, '').includes('.') || /^"?public"?\./i.test(n);
+  const IDENTIFIER = '(?:"(?:[^"]|"")+"|[A-Za-z_][\\w$]*)';
+  const NAME = '(' + IDENTIFIER + '(?:\\s*\\.\\s*' + IDENTIFIER + ')?)(?![\\w$.])';
+  const parts = (n) => n.match(/"(?:[^"]|"")*"|[^.\s]+/g).map((p) =>
+    p.startsWith('"') ? p.slice(1, -1).replace(/""/g, '"') : p.toLowerCase());
+  const quotedIdentifier = (p) => '"' + p.replace(/"/g, '""') + '"';
+  const sqlIdentifier = (p) => /^[a-z_][a-z0-9_$]*$/.test(p) ? p : quotedIdentifier(p);
   const tables = new Map(); // name -> { rel, line, rls }
   const views = new Map();
   const functions = new Map();
   const securityName = (n) => {
-    const parts = n.split('.').map((p) => p.startsWith('"') ? p.slice(1, -1) : p.toLowerCase());
-    return parts.length === 1 ? 'public.' + parts[0] : parts.join('.');
+    const identifiers = parts(n);
+    if (identifiers.length === 1) identifiers.unshift('public');
+    return identifiers.map(sqlIdentifier).join('.');
   };
+  const norm = (n) => securityName(n).replace(/^public\./, '');
+  const isExposed = (n) => exposedSchemas.has(parts(securityName(n))[0]);
 
   for (const { rel, content } of sqlFiles) {
     const text = blankComments(content, /--[^\n]*/g);
@@ -565,10 +616,10 @@ function analyzeSupabaseSql() {
     const loc = (pos) => ({ file: rel, line: at(pos), evidence: snippet(content.split('\n')[at(pos) - 1]) });
 
     for (const m of text.matchAll(new RegExp(`create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?${NAME}`, 'gi'))) {
-      if (isPublic(m[1]) && !tables.has(norm(m[1]))) tables.set(norm(m[1]), { ...loc(m.index), rls: false });
+      if (isExposed(m[1]) && !tables.has(securityName(m[1]))) tables.set(securityName(m[1]), { ...loc(m.index), rls: false });
     }
     for (const m of text.matchAll(new RegExp(`alter\\s+table\\s+(?:only\\s+)?(?:if\\s+exists\\s+)?${NAME}\\s+(enable|disable)\\s+row\\s+level\\s+security`, 'gi'))) {
-      const t = tables.get(norm(m[1]));
+      const t = tables.get(securityName(m[1]));
       const enable = m[2].toLowerCase() === 'enable';
       if (t) t.rls = enable;
       if (!enable) {
@@ -576,7 +627,7 @@ function analyzeSupabaseSql() {
           ...loc(m.index), fix: 'Confirm whether the Data API exposes this schema and which table privileges anon/authenticated have. Without RLS, granted operations can reach every row. Enable RLS and appropriate policies for private data; verify deployed exposure and grants before reporting a public leak.' });
       }
     }
-    for (const m of text.matchAll(new RegExp(`drop\\s+table\\s+(?:if\\s+exists\\s+)?${NAME}`, 'gi'))) tables.delete(norm(m[1]));
+    for (const m of text.matchAll(new RegExp(`drop\\s+table\\s+(?:if\\s+exists\\s+)?${NAME}`, 'gi'))) tables.delete(securityName(m[1]));
 
     for (const m of text.matchAll(new RegExp(`create\\s+policy\\s+("[^"]+"|\\w+)\\s+on\\s+${NAME}([\\s\\S]*?);`, 'gi'))) {
       const [, policy, table, body] = m;
@@ -596,7 +647,7 @@ function analyzeSupabaseSql() {
       const view = new RegExp(`^(create(?:\\s+or\\s+replace)?|alter)\\s+view\\s+(?:if\\s+exists\\s+)?${NAME}([\\s\\S]*)$`, 'i').exec(statement.text);
       if (view) {
         const name = securityName(view[2]);
-        if (!name.startsWith('public.')) continue;
+        if (!isExposed(name)) continue;
         const create = /^create/i.test(view[1]);
         const options = (create ? /\bwith\s*\(([^)]*)\)\s*as\b/i : /^\s*(?:set|reset)\s*\(([^)]*)\)/i).exec(view[3])?.[1] ?? '';
         const invoker = /(?:^|,)\s*"?security_invoker"?\s*=\s*(true|on|yes|1|false|off|no|0)\s*(?=,|$)/i.exec(options);
@@ -611,7 +662,7 @@ function analyzeSupabaseSql() {
       const fn = new RegExp(`^(create(?:\\s+or\\s+replace)?|alter)\\s+function\\s+${NAME}\\s*\\(`, 'i').exec(statement.text);
       if (!fn) continue;
       const name = securityName(fn[2]);
-      if (!name.startsWith('public.')) continue;
+      if (!isExposed(name)) continue;
       const open = fn[0].lastIndexOf('(');
       const close = sqlParenEnd(statement.text, open);
       if (close < 0) continue;
@@ -631,14 +682,14 @@ function analyzeSupabaseSql() {
   for (const [name, info] of views) {
     if (info.invoker) continue;
     add({ id: 'VC-DB-VIEW-BYPASS', category: 'database', severity: 'medium', confidence: 'verify',
-      title: `View "${name.slice(7)}" uses owner privileges; verify RLS and API access`,
+      title: `View "${norm(name)}" uses owner privileges; verify RLS and API access`,
       file: info.file, line: info.line, evidence: info.evidence,
       fix: 'Views normally use their owner\'s privileges and RLS context. Verify API exposure, effective SELECT grants and the owner\'s RLS privileges before claiming a bypass or public access. On Postgres 15+, use security_invoker = true when callers should use their own privileges.' });
   }
   for (const info of functions.values()) {
     if (!info.definer || info.trigger) continue;
     add({ id: 'VC-DB-SECURITY-DEFINER', category: 'database', severity: 'medium', confidence: 'verify',
-      title: `Function "${info.name.slice(7)}" is SECURITY DEFINER; verify owner privileges and API access`,
+      title: `Function "${norm(info.name)}" is SECURITY DEFINER; verify owner privileges and API access`,
       file: info.file, line: info.line, evidence: info.evidence,
       fix: 'It runs with its owner\'s privileges; RLS bypass depends on that owner and the tables accessed. Verify API exposure, effective EXECUTE grants (including PUBLIC/inherited grants), owner RLS privileges and authorization inside the function. Set search_path = \'\', schema-qualify references and limit EXECUTE to intended roles.' });
   }
@@ -646,12 +697,19 @@ function analyzeSupabaseSql() {
   for (const [t, info] of tables) {
     if (info.rls) continue;
     add({ id: 'VC-DB-NO-RLS', category: 'database', severity: 'critical', confidence: 'verify',
-      title: `Table "${t}" has no Row Level Security in your migrations`, file: info.file, line: info.line, evidence: info.evidence,
-      fix: 'Confirm whether the Data API exposes this table and which privileges anon/authenticated have. Without RLS, granted operations can reach every row. For private data, use `alter table public.' + t + ' enable row level security;` plus appropriate policies. If enabled in the dashboard instead, confirm in Database → Advisors and check deployed exposure and grants.' });
+      title: `Table "${norm(t)}" has no Row Level Security in your migrations`, file: info.file, line: info.line, evidence: info.evidence,
+      fix: 'Confirm whether the Data API exposes this table and which privileges anon/authenticated have. Without RLS, granted operations can reach every row. For private data, use `alter table ' + parts(t).map(quotedIdentifier).join('.') + ' enable row level security;` plus appropriate policies. If enabled in the dashboard instead, confirm in Database → Advisors and check deployed exposure and grants.' });
   }
 }
 
-if (has('supabase')) analyzeSupabaseSql();
+if (has('supabase')) {
+  const projects = files.filter((rel) => /(?:^|\/)supabase\/config\.toml$/.test(rel)).map((rel) => ({
+    prefix: rel.slice(0, -'supabase/config.toml'.length), schemas: supabaseSchemas(rel), files: [],
+  })).sort((a, b) => b.prefix.length - a.prefix.length);
+  const fallback = { schemas: new Set(['public']), files: [] };
+  for (const file of sqlFiles) (projects.find((p) => file.rel.startsWith(p.prefix)) || fallback).files.push(file);
+  for (const project of [...projects, fallback]) analyzeSupabaseSql(project.files, project.schemas);
+}
 
 // ---------------------------------------------------------------------------
 // 4. Project-level checks
