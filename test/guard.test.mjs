@@ -35,6 +35,17 @@ test('blocks secret env vars with a browser-public prefix', () => {
   assert.equal(guard(write('/app/README.md', 'Never name it NEXT_PUBLIC_OPENAI_API_KEY')).code, 0);
 });
 
+test('public Supabase values are allowed but secret values still block under public-looking names', () => {
+  for (const value of [keys.publishable, keys.anon]) {
+    assert.equal(guard(write('/app/src/client.ts', `const apiKey = "${value}";`)).code, 0);
+  }
+  for (const value of [keys.supabaseSecret, keys.serviceRole, keys.openai]) {
+    const result = guard(write('/app/src/client.ts', `const SUPABASE_PUBLISHABLE_KEY = "${value}";`));
+    assert.equal(result.code, 2);
+    assert.ok(!result.stderr.includes(value), 'blocked secrets must remain masked');
+  }
+});
+
 test('respects vibecheck-ignore, VIBECHECK_GUARD=off and fails open on bad input', () => {
   assert.equal(guard(write('/a/t.ts', `const k = "${keys.openai}"; // vibecheck-ignore`)).code, 0);
   assert.equal(guard(write('/a/t.ts', `const k = "${keys.openai}";`), { VIBECHECK_GUARD: 'off' }).code, 0);

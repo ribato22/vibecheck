@@ -25,7 +25,9 @@
 
 ---
 
-In January 2026, a vibe-coded social network exposed **1.5 million API tokens and 35,000 email addresses**. One Supabase key sat in the front-end, and Row Level Security was off ([Wiz](https://www.wiz.io/blog/common-security-risks-in-vibe-coded-apps), [Infosecurity](https://www.infosecurity-magazine.com/news/moltbook-exposes-user-data-api/)). In 2025, **170+ Lovable apps** shipped with the same hole ([CVE-2025-48757](https://nvd.nist.gov/vuln/detail/CVE-2025-48757)). Every week, someone finds out their OpenAI key was in the JavaScript bundle by reading their bill.
+In January 2026, a vibe-coded social network exposed **1.5 million API tokens and 35,000 email addresses**. Its Supabase API allowed access to private data with Row Level Security off ([Wiz](https://www.wiz.io/blog/common-security-risks-in-vibe-coded-apps), [Infosecurity](https://www.infosecurity-magazine.com/news/moltbook-exposes-user-data-api/)). In 2025, **170+ Lovable apps** shipped with the same hole ([CVE-2025-48757](https://nvd.nist.gov/vuln/detail/CVE-2025-48757)). Every week, someone finds out their OpenAI key was in the JavaScript bundle by reading their bill.
+
+Supabase's publishable/anon key is expected in browser code. Access depends on which schemas the API exposes, role grants and RLS policies. Service-role and secret keys stay server-side.
 
 AI tools write code that **works**. Nobody checks that it's **safe**. vibecheck is the senior engineer who reviews your app before you hit deploy, in plain language, with the fixes ready to paste.
 
@@ -48,8 +50,8 @@ AI tools write code that **works**. Nobody checks that it's **safe**. vibecheck 
 
 | Area | Examples |
 |---|---|
-| 🔑 **Secrets** | OpenAI / Anthropic / Stripe / AWS / Supabase keys in code; secrets behind `NEXT_PUBLIC_` / `VITE_` / `EXPO_PUBLIC_`; `.env` committed now or in git history |
-| 🗄️ **Database** | Supabase tables without RLS, `using (true)` policies, users editing their own `is_admin`, policies trusting `user_metadata`; Firebase "test mode" and open rules; the service-role key in browser code |
+| 🔑 **Secrets** | OpenAI / Anthropic / Stripe / AWS keys and Supabase secret/service-role keys in code; secrets behind `NEXT_PUBLIC_` / `VITE_` / `EXPO_PUBLIC_`; `.env` committed now or in git history |
+| 🗄️ **Database** | Supabase RLS and policy leads checked against API exposure and grants, users editing their own `is_admin`, policies trusting `user_metadata`; Firebase "test mode" and open rules; the service-role key in browser code |
 | 🔐 **Auth** | API routes and server actions without a server-side check, IDOR (reading other people's records), admin by client flag, middleware-only auth, `jwt.decode` without verify |
 | 💸 **Money** | AI calls from the browser (`dangerouslyAllowBrowser`), paid APIs with no rate limit ("denial of wallet"), prices taken from the request, unverified Stripe / Midtrans / Xendit webhooks, premium unlocked from a success URL |
 | 🧱 **Input** | SQL injection, mass assignment, XSS via `dangerouslySetInnerHTML` and AI output, SSRF, shell injection, prompt injection through tools |
@@ -155,7 +157,7 @@ Only GO apps get a badge. A public "NO-GO" badge would tell attackers where to l
 
 A security tool should never be the security problem.
 
-- **The audit is read-only.** It writes only to `.vibecheck/`, which ignores itself in git. Fixes happen only in `/vibecheck:fix`, after you agree.
+- **The audit is read-only.** It writes only to `.vibecheck/`, which ignores itself in git. Fixes happen only in `/vibecheck:fix`, after you agree. Dashboard settings and deployed authorization tests remain `UNVERIFIED` until you provide evidence; the report includes checks for you to run.
 - **Zero dependencies, zero network calls**, and it never runs your project's code. About 1,000 lines of plain JavaScript you can read in 15 minutes: [`rules.mjs`](skills/check/scripts/rules.mjs), [`scan.mjs`](skills/check/scripts/scan.mjs), [`guard.mjs`](hooks/guard.mjs).
 - **Secrets are always masked** (`sk-p…9xQz`) in output, reports and guard messages.
 - **The guard fails open.** If it crashes, your work continues.
