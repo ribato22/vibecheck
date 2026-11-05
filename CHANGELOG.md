@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.3 (2026-11-05)
+
 - Resolve push source refs and configured mappings instead of scanning upstream..HEAD. Inspect complete selected commit histories, including merge diffs, without receiver exclusions; this can also flag already-published historical secrets. Refuse unresolved/unsupported selection and incomplete/failed history reads, disable lazy fetching/replacement objects/external converters, and share the inspection budget across a Bash call. Add regressions for named branches, alternate receivers, safe/multiple/configured sources, deletion-only pushes and inspection boundaries.
 
 ## 1.2.2 (2026-11-05)
