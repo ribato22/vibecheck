@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Guard commit/push checks now follow literal `git -C` targets instead of the session repo, including quoted/repeated paths and separate command targets. Add regression coverage for staged `.env`, earlier unpushed secret commits, safe targets, and Git option/message boundaries.
+
 ## 1.2.0 (2026-11-05)
 
 - Add configured custom-schema coverage from static Supabase `api.schemas` arrays, scoped to the closest project config while retaining `public` checks. Keep SQL object identity and RLS fixes schema-qualified; local configuration is not proof of deployed access.

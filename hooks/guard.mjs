@@ -89,26 +89,114 @@ function untrackedProblems(cwd) {
   return problems;
 }
 
+// shortcut: literal shell words only; expansions and shell cwd changes need a shell parser.
+function shellCommands(command) {
+  const commands = [];
+  let words = [], word = '', quote = '', started = false;
+  const finishWord = () => {
+    if (started) words.push(word);
+    word = ''; started = false;
+  };
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === '\\' && quote !== "'") {
+      const next = command[i + 1];
+      if (next === undefined) return [];
+      if (!quote || /["\\$`\n]/.test(next)) {
+        if (next !== '\n') { word += next; started = true; }
+        i++; continue;
+      }
+    }
+    if (quote) {
+      if (ch === quote) quote = '';
+      else word += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch; started = true;
+    } else if (ch === '#' && !started) {
+      const newline = command.indexOf('\n', i);
+      if (newline === -1) break;
+      i = newline - 1;
+    } else if (/[;&|\n()]/.test(ch)) {
+      finishWord();
+      if (words.length) commands.push(words);
+      words = [];
+    } else if (/\s/.test(ch)) finishWord();
+    else { word += ch; started = true; }
+  }
+  if (quote) return [];
+  finishWord();
+  if (words.length) commands.push(words);
+  return commands;
+}
+
+function gitCommands(command, cwd) {
+  const commands = [];
+  for (const words of shellCommands(command)) {
+    if (!/^(?:.*[\\/])?git(?:\.exe)?$/.test(words[0])) continue;
+    const dirs = [];
+    let i = 1;
+    for (; i < words.length; i++) {
+      const arg = words[i];
+      if (arg === '-C') {
+        if (++i === words.length) break;
+        dirs.push('-C', words[i]);
+      } else if (arg.startsWith('-C')) dirs.push('-C', arg.slice(2));
+      else if (arg === '--bare') dirs.push(arg);
+      else if (arg === '-c') i++;
+      else if (arg.startsWith('-c') || arg.startsWith('--config-env=') || [
+        '-p', '-P', '--paginate', '--no-pager', '--no-optional-locks', '--no-replace-objects',
+        '--no-lazy-fetch', '--no-advice', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
+      ].includes(arg)) continue;
+      else break;
+    }
+    const verb = words[i];
+    if (!['add', 'commit', 'push'].includes(verb)) continue;
+    // Let Git apply repeated -C options, including empty paths and symlink/.. traversal.
+    let root = git([...dirs, 'rev-parse', '--show-toplevel'], cwd);
+    if (!root && verb === 'push') root = git([...dirs, 'rev-parse', '--absolute-git-dir'], cwd);
+    if (root) commands.push({ verb, cwd: root.replace(/\r?\n$/, ''), args: words.slice(i + 1) });
+  }
+  return commands;
+}
+
+function commitsAll(args) {
+  for (let i = 0; i < args.length && args[i] !== '--'; i++) {
+    const arg = args[i];
+    if (['-m', '--message', '-F', '--file', '-C', '--reuse-message', '-c', '--reedit-message', '--author', '--date', '-t', '--template', '--trailer', '--fixup', '--squash', '--pathspec-from-file'].includes(arg)) i++;
+    else if (arg === '--all') return true;
+    else if (/^-[^-]/.test(arg)) {
+      for (let j = 1; j < arg.length; j++) {
+        const option = arg[j];
+        if (option === 'a') return true;
+        if ('mFCctSu'.includes(option)) {
+          if ('mFCct'.includes(option) && j === arg.length - 1) i++;
+          break; // Remaining characters are an option value.
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function checkGit(command, cwd) {
-  const commit = /\bgit\b[^;&|\n]*\bcommit\b/.test(command);
-  const push = /\bgit\b[^;&|\n]*\bpush\b/.test(command);
-  if (!commit && !push) return [];
-  if (git(['rev-parse', '--is-inside-work-tree'], cwd) === null) return [];
   const problems = [];
   const diffArgs = ['-U0', '--no-color', '--no-ext-diff'];
-
-  if (commit) {
-    problems.push(...patchProblems(git(['diff', '--cached', ...diffArgs], cwd) || ''));
-    const addsFiles = /\bgit\b[^;&|\n]*\badd\b/.test(command);
-    if (addsFiles || /\bcommit\b[^;&|\n]*\s(?:-[a-zA-Z]*a[a-zA-Z]*|--all)\b/.test(command)) {
-      problems.push(...patchProblems(git(['diff', ...diffArgs], cwd) || ''));
+  const addsFiles = new Set();
+  for (const cmd of gitCommands(command, cwd)) {
+    const target = cmd.cwd;
+    if (cmd.verb === 'add') addsFiles.add(target);
+    if (cmd.verb === 'commit') {
+      problems.push(...patchProblems(git(['diff', '--cached', ...diffArgs], target) || ''));
+      if (addsFiles.has(target) || commitsAll(cmd.args)) {
+        problems.push(...patchProblems(git(['diff', ...diffArgs], target) || ''));
+      }
+      if (addsFiles.has(target)) problems.push(...untrackedProblems(target));
     }
-    if (addsFiles) problems.push(...untrackedProblems(cwd));
-  }
-  if (push) {
-    const range = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], cwd) !== null
-      ? ['@{u}..HEAD'] : ['HEAD', '--not', '--remotes'];
-    problems.push(...patchProblems(git(['log', '-p', '--format=', ...diffArgs, ...range], cwd) || ''));
+    if (cmd.verb === 'push') {
+      const range = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], target) !== null
+        ? ['@{u}..HEAD'] : ['HEAD', '--not', '--remotes'];
+      problems.push(...patchProblems(git(['log', '-p', '--format=', ...diffArgs, ...range], target) || ''));
+    }
   }
   return problems;
 }
