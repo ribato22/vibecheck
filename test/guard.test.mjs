@@ -1305,3 +1305,247 @@ test('shell policy regressions: exec and time add preserve untracked files for a
     assert.equal(git(target, 'diff', '--cached', '--name-only'), '', 'inspection must not stage the fixture');
   } finally { removeProject(dir); }
 });
+
+test('shell context regressions: literal redirections do not hide Git commit or push inspection', () => {
+  const { dir, cwd, target, remote, main } = pushFixture();
+  try {
+    const output = join(dir, 'must-not-be-created.log');
+    const input = join(dir, 'input.txt');
+    writeFileSync(input, 'safe input\n');
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    git(target, 'add', '.env');
+    const index = git(target, 'diff', '--cached', '--binary');
+    for (const verb of ['commit -m fixture', 'push origin secret-history']) {
+      for (const command of [
+        `>${quoted(output)} git -C ${quoted(target)} ${verb}`,
+        `git >${quoted(output)} -C ${quoted(target)} ${verb}`,
+        `git -C ${quoted(target)} ${verb} >>${quoted(output)}`,
+        `<${quoted(input)} git -C ${quoted(target)} ${verb}`,
+        `git -C ${quoted(target)} <${quoted(input)} ${verb}`,
+        `git -C ${quoted(target)} ${verb} 2>&1`,
+        `git -C ${quoted(target)} ${verb} >${quoted(output)}<${quoted(input)}`,
+        `git &>${quoted(output)} -C ${quoted(target)} ${verb}`,
+        `git -C ${quoted(target)} ${verb} &>>${quoted(output)}`,
+        `git -C ${quoted(target)} ${verb} >|${quoted(output)}`,
+        `git -C ${quoted(target)} ${verb} <>${quoted(input)}`,
+        `git -C ${quoted(target)} ${verb} <&0`,
+      ]) {
+        const result = guard(bash(command, cwd));
+        assert.equal(result.code, 2, command);
+        assert.match(result.stderr, /\.env would be committed|OpenAI API key/);
+        assert.doesNotMatch(result.stderr, /Cannot inspect/);
+        assert.ok(!result.stderr.includes(keys.openai));
+      }
+    }
+    assert.equal(existsSync(output), false, 'inspection must not apply a redirection');
+    assert.equal(git(target, 'rev-parse', 'HEAD').trim(), main);
+    assert.equal(git(target, 'diff', '--cached', '--binary'), index);
+    assert.equal(git(remote, 'rev-parse', 'main').trim(), main);
+  } finally { removeProject(dir); }
+});
+
+test('shell context regressions: safe redirection and quoted operator text stay literal', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const output = join(dir, 'must-not-be-created.log');
+    const input = join(dir, 'input.txt');
+    writeFileSync(input, 'safe\n');
+    writeFileSync(join(target, 'safe.txt'), 'safe\n');
+    git(target, 'add', 'safe.txt');
+    const head = git(target, 'rev-parse', 'HEAD');
+    const index = git(target, 'diff', '--cached', '--binary');
+    for (const command of [
+      `exec -- git -C ${quoted(target)} commit -m '<quoted > message>'`,
+      `time -p git -C ${quoted(target)} commit -m '<quoted > message>'`,
+      `>${quoted(output)} git -C ${quoted(target)} commit -m safe`,
+      `git >${quoted(output)} -C ${quoted(target)} commit -m safe`,
+      `git -C ${quoted(target)} commit -m safe <${quoted(input)} 2>&1`,
+      `echo safe >${quoted(output)}`,
+      `printf '%s' 'git commit <input >output 2>&1'`,
+      `cat <<'TEXT'\ngit -C missing commit >output\nTEXT\n`,
+      `cat <<< 'git commit >output'`,
+      `printf '%s' "$(printf '%s' '<literal > text')"`,
+      `printf -- '-v GIT_DIR fixture'; git -C ${quoted(target)} commit -m safe`,
+    ]) assert.equal(guard(bash(command, cwd)).code, 0, command);
+    for (const prefix of ['exec --', 'time -p']) {
+      const result = guard(bash(`${prefix} git -C ${quoted(target)} commit -m safe >${quoted(output)}`, cwd));
+      assert.equal(result.code, 2, prefix);
+      assert.match(result.stderr, /Cannot inspect shell command/);
+    }
+    assert.equal(existsSync(output), false);
+    assert.equal(git(target, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(target, 'diff', '--cached', '--binary'), index);
+  } finally { removeProject(dir); }
+});
+
+test('shell context regressions: unsupported redirects refuse while process substitutions stay inspected', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const output = join(dir, 'must-not-be-created.log');
+    const marker = join(dir, 'substitution-must-not-run');
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    git(target, 'add', '.env');
+    const head = git(target, 'rev-parse', 'HEAD');
+    const index = git(target, 'diff', '--cached', '--binary');
+    const commit = `git -C ${quoted(target)} commit -m fixture`;
+    for (const command of [
+      `{fixture_fd}>${quoted(output)} ${commit}`,
+      `>${quoted(output)} ${commit} <`,
+      `${commit} >`,
+    ]) {
+      const result = guard(bash(command, cwd));
+      assert.equal(result.code, 2, command);
+      assert.match(result.stderr, /Cannot inspect shell command/);
+    }
+    for (const command of [
+      `cat <(touch ${quoted(marker)}; ${commit})`,
+      `cat >(${commit})`,
+      `cat <<< "$(${commit})"`,
+      `cat >"$(touch ${quoted(marker)}; ${commit})"`,
+      `cat < <(touch ${quoted(marker)}; ${commit})`,
+    ]) {
+      const result = guard(bash(command, cwd));
+      assert.equal(result.code, 2, command);
+      assert.match(result.stderr, /\.env would be committed/);
+      assert.ok(!result.stderr.includes(keys.openai));
+    }
+    assert.equal(guard(bash('cat <(printf safe)', cwd)).code, 0);
+    assert.equal(existsSync(output), false);
+    assert.equal(existsSync(marker), false);
+    assert.equal(git(target, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(target, 'diff', '--cached', '--binary'), index);
+  } finally { removeProject(dir); }
+});
+
+test('shell context regressions: printf variable writes retain Git context uncertainty', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const head = git(cwd, 'rev-parse', 'HEAD');
+    const index = git(cwd, 'diff', '--cached', '--binary');
+    for (const setup of [
+      `export GIT_DIR GIT_WORK_TREE; printf -v GIT_DIR %s ${quoted(join(target, '.git'))}; printf -v GIT_WORK_TREE %s ${quoted(target)}`,
+      `printf -v GIT_DIR %s ${quoted(join(target, '.git'))}`,
+      `printf -vGIT_DIR %s ${quoted(join(target, '.git'))}`,
+      'printf -v GIT_CONFIG_COUNT %s 1',
+      'fixture_name=GIT_DIR; printf -v "$fixture_name" %s fixture',
+    ]) {
+      for (const verb of ['commit -m fixture', 'push origin main', 'fixture -m fixture']) {
+        const result = guard(bash(`/bin/bash -c ${quoted(`${setup}; git -C ${quoted(cwd)} ${verb}`)}`, cwd));
+        assert.equal(result.code, 2, `${setup}; ${verb}`);
+        assert.match(result.stderr, /Cannot inspect/);
+      }
+      assert.equal(guard(bash(`${setup}; git -C ${quoted(cwd)} status --short`, cwd)).code, 0, setup);
+    }
+    for (const setup of ['printf -v LABEL %s GIT_DIR', 'printf -vLABEL %s "GIT_CONFIG_COUNT=1"']) {
+      assert.equal(guard(bash(`${setup}; git -C ${quoted(cwd)} commit -m safe`, cwd)).code, 0, setup);
+    }
+    assert.equal(guard(bash("printf '%s' 'printf -v GIT_DIR value; export GIT_DIR'", cwd)).code, 0);
+    assert.equal(git(cwd, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(cwd, 'diff', '--cached', '--binary'), index);
+  } finally { removeProject(dir); }
+});
+
+test('shell context regressions: read destinations retain Git configuration and alias uncertainty', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const head = git(target, 'rev-parse', 'HEAD');
+    const index = git(target, 'diff', '--cached', '--binary');
+    for (const setup of [
+      "export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; read -r GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 <<'CONFIG'\n1 alias.fixture commit\nCONFIG\n",
+      `read -r GIT_DIR <<< ${quoted(join(target, '.git'))}`,
+      'fixture_name=GIT_CONFIG_COUNT; read -r "$fixture_name" <<< 1',
+    ]) {
+      for (const verb of ['commit -m fixture', 'push origin main', 'fixture -m fixture']) {
+        const body = `${setup}\ngit -C ${quoted(target)} ${verb}`;
+        const result = guard(bash(`/bin/bash -c ${quoted(body)}`, cwd));
+        assert.equal(result.code, 2, `${setup}; ${verb}`);
+        assert.match(result.stderr, /Cannot inspect/);
+      }
+      assert.equal(guard(bash(`/bin/bash -c ${quoted(`${setup}\ngit -C ${quoted(target)} status --short`)}`, cwd)).code, 0, setup);
+    }
+    assert.equal(guard(bash(`read -r LABEL <<< GIT_DIR; git -C ${quoted(target)} commit -m safe`, cwd)).code, 0);
+    assert.equal(guard(bash("printf '%s' 'read -r GIT_DIR <<< fixture'", cwd)).code, 0);
+    assert.equal(git(target, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(target, 'diff', '--cached', '--binary'), index);
+  } finally { removeProject(dir); }
+});
+
+test('shell context regressions: trap and hash indirection refuse without executing callbacks', () => {
+  const { dir, cwd, target, remote, main } = pushFixture();
+  try {
+    const marker = join(dir, 'callback-must-not-run');
+    const index = git(target, 'diff', '--cached', '--binary');
+    for (const verb of ['commit -m fixture', 'push origin secret-history']) {
+      for (const body of [
+        `trap ${quoted(`touch ${quoted(marker)}; git -C ${quoted(target)} ${verb}`)} EXIT; :`,
+        `hash -p git fixture_git; fixture_git -C ${quoted(target)} ${verb}`,
+      ]) {
+        const result = guard(bash(`/bin/bash -c ${quoted(body)}`, cwd));
+        assert.equal(result.code, 2, body);
+        assert.match(result.stderr, /Cannot inspect shell command/);
+      }
+    }
+    for (const command of ["trap 'printf safe' EXIT; :", 'hash -p git fixture_git', 'hash -t fixture_git']) {
+      assert.equal(guard(bash(command, cwd)).code, 2, command);
+    }
+    for (const command of ["printf '%s' 'trap git EXIT; hash -p git fixture_git'", 'command -v git', 'command -v trap', 'command -v hash']) {
+      assert.equal(guard(bash(command, cwd)).code, 0, command);
+    }
+    assert.equal(existsSync(marker), false);
+    assert.equal(git(target, 'rev-parse', 'HEAD').trim(), main);
+    assert.equal(git(target, 'diff', '--cached', '--binary'), index);
+    assert.equal(git(remote, 'rev-parse', 'main').trim(), main);
+  } finally { removeProject(dir); }
+});
+
+test('shell context regressions: inline Git configuration refuses every push before source selection', () => {
+  const { dir, cwd, target, remote, main } = pushFixture();
+  try {
+    const marker = join(dir, 'config-must-not-run');
+    const index = git(target, 'diff', '--cached', '--binary');
+    for (const setting of ['remote.origin.push=secret-history:refs/heads/feature', 'color.ui=false', `alias.unused=!touch ${quoted(marker)}`]) {
+      for (const options of [`-c ${quoted(setting)}`, `-c${quoted(setting)}`]) {
+        const result = guard(bash(`git -C ${quoted(target)} ${options} push origin`, cwd));
+        assert.equal(result.code, 2, options);
+        assert.match(result.stderr, /Cannot inspect git push/);
+      }
+    }
+    assert.equal(guard(bash(`sh -c ${quoted(`git -C ${quoted(target)} -c color.ui=false push origin main`)}`, cwd)).code, 2);
+    assert.equal(guard(bash(`git -C ${quoted(target)} -c color.ui=false commit -m safe`, cwd)).code, 0);
+    assert.equal(guard(bash(`git -C ${quoted(target)} -c remote.origin.push=secret-history status --short`, cwd)).code, 0);
+    assert.equal(existsSync(marker), false);
+    assert.equal(git(target, 'rev-parse', 'HEAD').trim(), main);
+    assert.equal(git(target, 'diff', '--cached', '--binary'), index);
+    assert.equal(git(remote, 'rev-parse', 'main').trim(), main);
+  } finally { removeProject(dir); }
+});
+
+test('shell context regressions: unknown Git global options refuse while terminal information stays allowed', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const execPath = git(target, '--exec-path').trim();
+    const head = git(target, 'rev-parse', 'HEAD');
+    const index = git(target, 'diff', '--cached', '--binary');
+    for (const verb of ['commit -m fixture', 'push origin main', 'status --short']) {
+      for (const command of [
+        `git --exec-path=${quoted(execPath)} -C ${quoted(target)} ${verb}`,
+        `git -C ${quoted(target)} --exec-path=${quoted(execPath)} ${verb}`,
+        `git --unknown-global-option -C ${quoted(target)} ${verb}`,
+      ]) {
+        const result = guard(bash(command, cwd));
+        assert.equal(result.code, 2, command);
+        assert.match(result.stderr, /Cannot inspect/);
+      }
+    }
+    for (const option of ['--version', '-v', '--help', '--html-path', '--man-path', '--info-path', '--exec-path']) {
+      assert.equal(guard(bash(`git ${option}`, cwd)).code, 0, option);
+    }
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    git(target, 'add', '.env');
+    assert.equal(guard(bash(`git --version; git -C ${quoted(target)} commit -m fixture`, cwd)).code, 2);
+    git(target, 'reset', '-q', '--', '.env');
+    assert.equal(guard(bash('git help -a', cwd)).code, 0);
+    assert.equal(git(target, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(target, 'diff', '--cached', '--binary'), index);
+  } finally { removeProject(dir); }
+});
