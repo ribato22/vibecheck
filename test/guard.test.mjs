@@ -171,14 +171,25 @@ test('git -C handles quoted, attached, repeated, relative and empty paths', () =
   } finally { removeProject(dir); }
 });
 
-test('repeated git -C follows physical directories through symlinks', () => {
+test('repeated git -C follows native Git directory traversal through symlinks', (t) => {
   const { dir, cwd, target } = gitFixture();
   try {
+    git(dir, 'init', '-q');
+    writeFileSync(join(dir, 'README.md'), 'outer repo\n');
+    git(dir, 'add', 'README.md');
+    git(dir, 'commit', '-qm', 'outer baseline');
     mkdirSync(join(target, 'child'));
-    symlinkSync(join(target, 'child'), join(cwd, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
-    writeFileSync(join(target, '.env'), 'SECRET=synthetic\n');
-    git(target, 'add', '.env');
-    assert.equal(guard(bash(`git -C ${quoted(join(cwd, 'link'))} -C .. commit -m fixture`, cwd)).code, 2);
+    const link = join(dir, 'link');
+    symlinkSync(join(target, 'child'), link, process.platform === 'win32' ? 'junction' : 'dir');
+    // Native Git may resolve junction/.. differently from POSIX symlink/.. traversal.
+    for (const repo of [dir, target]) {
+      writeFileSync(join(repo, '.env'), 'SECRET=synthetic\n');
+      git(repo, 'add', '.env');
+    }
+    const selected = git(cwd, '-C', link, '-C', '..', 'rev-parse', '--show-toplevel').replace(/\r?\n$/, '');
+    assert.match(git(selected, 'diff', '--cached', '--name-only'), /^\.env$/m);
+    t.diagnostic(`native Git selected ${selected}`);
+    assert.equal(guard(bash(`git -C ${quoted(link)} -C .. commit -m fixture`, cwd)).code, 2);
   } finally { removeProject(dir); }
 });
 
