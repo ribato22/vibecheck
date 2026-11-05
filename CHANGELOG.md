@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.4 (2026-11-05)
+
 - Inspect Git writes through simple `env NAME=value` prefixes. Refuse commit/push with explicit repo/work-tree overrides or inline repo/index environment overrides, even with absolute `-C`, and preserve uncertainty from an override-selected `git add`. Add regressions and safe/read-only controls; document the conservative refusals and remaining shell-parser limits.
 
 ## 1.2.3 (2026-11-05)
