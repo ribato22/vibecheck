@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Inspect Git writes through simple `env NAME=value` prefixes. Refuse commit/push with explicit repo/work-tree overrides or inline repo/index environment overrides, even with absolute `-C`, and preserve uncertainty from an override-selected `git add`. Add regressions and safe/read-only controls; document the conservative refusals and remaining shell-parser limits.
+
 ## 1.2.3 (2026-11-05)
 
 - Resolve push source refs and configured mappings instead of scanning upstream..HEAD. Inspect complete selected commit histories, including merge diffs, without receiver exclusions; this can also flag already-published historical secrets. Refuse unresolved/unsupported selection and incomplete/failed history reads, disable lazy fetching/replacement objects/external converters, and share the inspection budget across a Bash call. Add regressions for named branches, alternate receivers, safe/multiple/configured sources, deletion-only pushes and inspection boundaries.
