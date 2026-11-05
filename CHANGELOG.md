@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.7 (2026-11-05)
+
 - Inspect explicit command substitutions inside arithmetic expressions and array-assignment indexes before keeping the surrounding syntax opaque to heredoc parsing. Preserve nested Git add scope, safe shifts/quoted text and parsing limits; add commit/push regressions without evaluating shell bodies.
 
 ## 1.2.6 (2026-11-05)
