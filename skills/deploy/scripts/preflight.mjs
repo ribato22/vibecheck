@@ -14,7 +14,7 @@ import { join, relative, basename, extname, resolve, sep, posix } from 'node:pat
 import { spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 
-const VERSION = '1.2.5';
+const VERSION = '1.2.6';
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILES = 20000;
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
