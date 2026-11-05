@@ -17,7 +17,6 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git *)",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs\"",
             "timeout": 30
           }

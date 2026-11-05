@@ -497,6 +497,62 @@ test('read-only shell commands and message-only expansion remain allowed', () =>
   } finally { removeProject(dir); }
 });
 
+test('heredoc payloads are text rather than top-level Git commands', () => {
+  const { dir, cwd } = gitFixture();
+  try {
+    const example = `git -C ${quoted(join(dir, 'not-a-repo'))} push origin main`;
+    for (const command of [
+      `cat <<'EXAMPLE'\n${example}\nEXAMPLE`,
+      `cat <<EXAMPLE\n${example}\nEXAMPLE\n`,
+      `cat <<\\EXAMPLE\n${example}\nEXAMPLE\n`,
+      `cat <<-"EXAMPLE"\n\t${example}\n\tEXAMPLE\n`,
+      `cat <<FIRST <<'SECOND'\n${example}\nFIRST\n${example}\nSECOND\n`,
+    ]) assert.equal(guard(bash(command, cwd)).code, 0, command);
+  } finally { removeProject(dir); }
+});
+
+test('heredocs do not hide real Git writes before or after their payloads', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, '.env'), 'SECRET=synthetic\n');
+    git(target, 'add', '.env');
+    const commit = `env LABEL=fixture git -C ${quoted(target)} commit -m fixture`;
+    const example = `git -C ${quoted(join(dir, 'not-a-repo'))} push origin main`;
+    for (const command of [
+      `cat <<'EXAMPLE'\n${example}\nEXAMPLE\n${commit}`,
+      `${commit}; cat <<EXAMPLE\n${example}\nEXAMPLE`,
+      `cat <<EXAMPLE; ${commit}\n${example}\nEXAMPLE`,
+      `cat <<FIRST <<-SECOND\n${example}\nFIRST\n\t${example}\n\tSECOND\n${commit}`,
+    ]) {
+      const result = guard(bash(command, cwd));
+      assert.equal(result.code, 2, command);
+      assert.match(result.stderr, /\.env would be committed/);
+      assert.doesNotMatch(result.stderr, /Cannot inspect git/);
+    }
+  } finally { removeProject(dir); }
+});
+
+test('arithmetic and word expansions containing shifts cannot hide a later Git write', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, '.env'), 'SECRET=synthetic\n');
+    git(target, 'add', '.env');
+    const commit = `git -C ${quoted(target)} commit -m fixture`;
+    for (const command of [
+      `((value=1<<2));\n${commit}\n2`,
+      `echo \${LABEL:-1<<EXAMPLE}\n${commit}\nEXAMPLE}`,
+      `printf '%s\\n' "\${LABEL:- # default}"\n${commit}`,
+      `printf '%s\\n' "\${LABEL:-can't}"\n${commit}`,
+      `values[1<<2]=safe\n${commit}\n2]=safe`,
+      `values[1 << 2]=safe\n${commit}\n2]=safe`,
+    ]) {
+      const result = guard(bash(command, cwd));
+      assert.equal(result.code, 2, command);
+      assert.match(result.stderr, /\.env would be committed/);
+    }
+  } finally { removeProject(dir); }
+});
+
 test('an absolute literal git -C restores an inspectable target after cd', () => {
   const { dir, cwd, target } = gitFixture();
   try {

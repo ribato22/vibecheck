@@ -91,7 +91,7 @@ function untrackedProblems(cwd) {
 }
 
 // Keep substitutions opaque: finding their boundary must never evaluate their body.
-function shellExpansionEnd(command, start) {
+function shellExpansionEnd(command, start, openingLength = 2, pair = '()', parameterDoubleQuoted = false) {
   if (command[start] === '`') {
     for (let i = start + 1; i < command.length; i++) {
       if (command[i] === '\\') i++;
@@ -100,7 +100,7 @@ function shellExpansionEnd(command, start) {
     return -1;
   }
   let quote = '', depth = 1;
-  for (let i = start + 2; i < command.length; i++) {
+  for (let i = start + openingLength; i < command.length; i++) {
     const ch = command[i];
     if (ch === '\\' && quote !== "'") { i++; continue; }
     if (quote !== "'" && (ch === '`' || (ch === '$' && command[i + 1] === '('))) {
@@ -108,13 +108,13 @@ function shellExpansionEnd(command, start) {
       if (i === -1) return -1;
     } else if (quote) {
       if (ch === quote) quote = '';
-    } else if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === '#' && /[\s;|&()]/.test(command[i - 1])) {
+    } else if (ch === '"' || (ch === "'" && !parameterDoubleQuoted)) quote = ch;
+    else if (pair === '()' && openingLength === 2 && ch === '#' && /[\s;|&()]/.test(command[i - 1])) {
       i = command.indexOf('\n', i);
       if (i === -1) return -1;
     }
-    else if (ch === '(') depth++;
-    else if (ch === ')' && --depth === 0) return i;
+    else if (ch === pair[0] && (pair !== '{}' || command[i - 1] === '$')) depth++;
+    else if (ch === pair[1] && --depth === 0) return i;
   }
   return -1;
 }
@@ -123,15 +123,36 @@ function shellExpansionEnd(command, start) {
 function shellCommands(command) {
   const commands = [];
   let words = [], expansions = new Set(), word = '', quote = '', started = false, expands = false;
+  let heredoc = null, heredocs = [];
   const finishWord = () => {
     if (started) {
-      if (expands) expansions.add(words.length);
-      words.push(word);
+      if (heredoc !== null) {
+        heredocs.push({ delimiter: word, stripTabs: heredoc });
+        heredoc = null;
+      } else {
+        if (expands) expansions.add(words.length);
+        words.push(word);
+      }
     }
     word = ''; started = false; expands = false;
   };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
+    // Arithmetic and assignment indexes can contain shifts without starting a heredoc.
+    if (!quote && heredoc === null && ch === '(' && command[i + 1] === '(') {
+      const end = shellExpansionEnd(command, i, 1);
+      if (end !== -1) {
+        finishWord(); word = command.slice(i, end + 1); started = true; i = end;
+        continue;
+      }
+    }
+    if (!quote && heredoc === null && ch === '[' && /^[A-Za-z_]\w*$/.test(word) && words.every((w) => /^[A-Za-z_]\w*=/.test(w))) {
+      const end = shellExpansionEnd(command, i, 1, '[]');
+      if (end !== -1 && /^\+?=/.test(command.slice(end + 1))) {
+        word += command.slice(i, end + 1); i = end;
+        continue;
+      }
+    }
     if (ch === '\\' && quote !== "'") {
       const next = command[i + 1];
       if (next === undefined) return [];
@@ -140,8 +161,9 @@ function shellCommands(command) {
         i++; continue;
       }
     }
-    if (quote !== "'" && (ch === '`' || (ch === '$' && command[i + 1] === '('))) {
-      const end = shellExpansionEnd(command, i);
+    if (quote !== "'" && (ch === '`' || (ch === '$' && ['(', '{'].includes(command[i + 1])))) {
+      const parameter = command[i + 1] === '{';
+      const end = shellExpansionEnd(command, i, 2, parameter ? '{}' : '()', parameter && quote === '"');
       if (end === -1) return [];
       word += command.slice(i, end + 1);
       expands = true; started = true; i = end;
@@ -153,6 +175,8 @@ function shellCommands(command) {
       else word += ch;
     } else if (ch === '"' || ch === "'") {
       quote = ch; started = true;
+    } else if (ch === '<' && command[i + 1] === '<' && command[i - 1] !== '<' && command[i + 2] !== '<') {
+      finishWord(); heredoc = command[i + 2] === '-'; i += heredoc ? 2 : 1;
     } else if (ch === '#' && !started) {
       const newline = command.indexOf('\n', i);
       if (newline === -1) break;
@@ -161,6 +185,20 @@ function shellCommands(command) {
       finishWord();
       if (words.length) commands.push({ words, expansions });
       words = []; expansions = new Set();
+      if (ch === '\n' && heredocs.length) {
+        let cursor = i + 1;
+        for (const doc of heredocs) {
+          let closed = false;
+          while (cursor <= command.length) {
+            const end = command.indexOf('\n', cursor);
+            const line = command.slice(cursor, end === -1 ? command.length : end);
+            cursor = end === -1 ? command.length + 1 : end + 1;
+            if ((doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.delimiter) { closed = true; break; }
+          }
+          if (!closed) return commands;
+        }
+        heredocs = []; i = cursor - 1;
+      }
     } else if (/\s/.test(ch)) finishWord();
     else { word += ch; started = true; }
   }

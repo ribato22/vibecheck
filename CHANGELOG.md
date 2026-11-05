@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove the Bash hook's narrow `if` prefix filter so `env`-wrapped Git reaches the guard parser. Keep heredoc payloads opaque without hiding real Git writes outside them, and distinguish arithmetic/parameter/index shifts from heredoc redirects. Add manifest and parser regressions. Every Bash call now starts the guard, including unrelated commands.
+
 ## 1.2.4 (2026-11-05)
 
 - Inspect Git writes through simple `env NAME=value` prefixes. Refuse commit/push with explicit repo/work-tree overrides or inline repo/index environment overrides, even with absolute `-C`, and preserve uncertainty from an override-selected `git add`. Add regressions and safe/read-only controls; document the conservative refusals and remaining shell-parser limits.

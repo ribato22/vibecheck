@@ -52,6 +52,17 @@ test('the hook points at a script that exists', () => {
   }
 });
 
+test('the Bash guard receives every Bash call without a command-prefix filter', () => {
+  const config = JSON.parse(read('hooks/hooks.json'));
+  const guards = config.hooks.PreToolUse
+    .filter((group) => group.matcher === 'Bash')
+    .flatMap((group) => group.hooks)
+    .filter((hook) => hook.type === 'command' && hook.command.includes('${CLAUDE_PLUGIN_ROOT}/hooks/guard.mjs'));
+  assert.ok(guards.length > 0, 'the actual guard must be registered for Bash');
+  assert.ok(guards.some((hook) => !Object.hasOwn(hook, 'if') && !hook.async && !hook.asyncRewake),
+    'a synchronous guard must receive all Bash calls, including env-wrapped Git, before deciding what to inspect');
+});
+
 test('plugin, package, scanner and changelog versions agree', () => {
   const plugin = JSON.parse(read('.claude-plugin/plugin.json')).version;
   const pkg = JSON.parse(read('package.json')).version;
