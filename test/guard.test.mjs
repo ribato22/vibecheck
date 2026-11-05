@@ -1,7 +1,7 @@
 // vibecheck-ignore-file
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { keys, makeProject, removeProject, git, guard } from './helpers.mjs';
 
@@ -265,5 +265,131 @@ test('push checks still cover bare repos with and without git -C', () => {
     assert.equal(guard(bash('git push origin main', bare)).code, 2);
     assert.equal(guard(bash(`git -C ${quoted(bare)} push origin main`, cwd)).code, 2);
     assert.equal(guard(bash(`git -C ${quoted(bare)} --bare push origin main`, cwd)).code, 2);
+  } finally { removeProject(dir); }
+});
+
+test('rejects unresolved shell variable repo paths before a commit', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    git(target, 'add', '.env');
+    const before = git(target, 'rev-parse', 'HEAD');
+    const result = guard(bash(`VIBECHECK_REPO=${quoted(target)}; git -C "$VIBECHECK_REPO" commit -m fixture`, cwd));
+    assert.equal(result.code, 2, 'must not silently inspect a different repo or skip the write');
+    assert.match(result.stderr, /literal.*git -C|git -C.*literal/i);
+    assert.ok(!result.stderr.includes(keys.openai));
+    assert.equal(git(target, 'rev-parse', 'HEAD'), before);
+    assert.match(git(target, 'diff', '--cached', '--name-only'), /^\.env$/m);
+  } finally { removeProject(dir); }
+});
+
+test('rejects a push after shell directory changes instead of inspecting the session repo', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, 'key.ts'), `const key = "${keys.openai}";\n`);
+    git(target, 'add', 'key.ts');
+    git(target, 'commit', '-qm', 'synthetic secret');
+    git(target, 'rm', '-q', 'key.ts');
+    git(target, 'commit', '-qm', 'remove synthetic secret');
+    for (const command of [
+      `cd ${quoted(target)} && git push origin main`,
+      `(cd ${quoted(target)} && git push origin main)`,
+    ]) {
+      const result = guard(bash(command, cwd));
+      assert.equal(result.code, 2, command);
+      assert.match(result.stderr, /literal.*git -C|git -C.*literal/i);
+      assert.ok(!result.stderr.includes(keys.openai));
+    }
+  } finally { removeProject(dir); }
+});
+
+test('rejects command substitutions in repo paths without executing them', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const marker = join(dir, 'must-not-exist');
+    const body = `touch ${quoted(marker)}; printf '%s' ${quoted(target)}`;
+    for (const path of [`"$(${body})"`, `$(${body})`, `\`${body}\``, `"$(printf '%s' \"$(printf '%s' ${quoted(target)})\")"`, `"$(printf '%s' ${quoted(target)} # don't parse ) here\n)"`]) {
+      const result = guard(bash(`git -C ${path} push origin main`, cwd));
+      assert.equal(result.code, 2, path);
+      assert.match(result.stderr, /Cannot inspect git push/);
+      assert.equal(existsSync(marker), false, 'inspection must never execute shell text');
+    }
+  } finally { removeProject(dir); }
+});
+
+test('an unresolved git add cannot hide files from a later literal commit', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    const command = `VIBECHECK_REPO=${quoted(target)}; git -C "$VIBECHECK_REPO" add . && git -C ${quoted(target)} commit -m fixture`;
+    const result = guard(bash(command, cwd));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /Cannot inspect git commit/);
+    assert.equal(git(target, 'diff', '--cached', '--name-only'), '', 'inspection must not stage the file');
+  } finally { removeProject(dir); }
+});
+
+test('assignments and shell builtins do not hide the Git command or directory change', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, '.env'), 'SECRET=synthetic\n');
+    git(target, 'add', '.env');
+    for (const command of [
+      `VIBECHECK_CASE=fixture git -C ${quoted(target)} commit -m fixture`,
+      `command git -C ${quoted(target)} commit -m fixture`,
+      `builtin cd ${quoted(target)} && git commit -m fixture`,
+    ]) assert.equal(guard(bash(command, cwd)).code, 2, command);
+  } finally { removeProject(dir); }
+});
+
+test('literal dollar paths are inspected rather than treated as shell expansion', () => {
+  const { dir, cwd } = gitFixture();
+  try {
+    const target = join(dir, 'literal $VIBECHECK_REPO');
+    mkdirSync(target);
+    git(target, 'init', '-q');
+    writeFileSync(join(target, '.env'), 'SECRET=synthetic\n');
+    git(target, 'add', '.env');
+    const escaped = `"${target.replaceAll('\\', '\\\\').replaceAll('$', '\\$').replaceAll('"', '\\"')}"`;
+    for (const path of [quoted(target), escaped]) {
+      const result = guard(bash(`git -C ${path} commit -m fixture`, cwd));
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /\.env would be committed/);
+      assert.doesNotMatch(result.stderr, /Cannot inspect git/);
+    }
+  } finally { removeProject(dir); }
+});
+
+test('read-only shell commands and message-only expansion remain allowed', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, 'safe.txt'), 'safe\n');
+    git(target, 'add', 'safe.txt');
+    const marker = join(dir, 'must-not-exist');
+    for (const command of [
+      `cd ${quoted(target)} && git status`,
+      `git -C "$VIBECHECK_REPO" status`,
+      `echo 'git -C "$VIBECHECK_REPO" commit'`,
+      `git -C ${quoted(target)} commit -m "$MESSAGE"`,
+      `git -C ${quoted(target)} commit -m "$(touch ${quoted(marker)}; printf '%s' push)"`,
+    ]) assert.equal(guard(bash(command, cwd)).code, 0, command);
+    assert.equal(existsSync(marker), false);
+    assert.match(git(target, 'diff', '--cached', '--name-only'), /^safe.txt$/m);
+  } finally { removeProject(dir); }
+});
+
+test('an absolute literal git -C restores an inspectable target after cd', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, '.env'), 'SECRET=synthetic\n');
+    git(target, 'add', '.env');
+    writeFileSync(join(cwd, 'safe.txt'), 'safe\n');
+    git(cwd, 'add', 'safe.txt');
+    assert.equal(guard(bash(`cd ${quoted(target)} && git -C ${quoted(cwd)} commit -m safe`, cwd)).code, 0);
+    const result = guard(bash(`cd ${quoted(cwd)} && git -C ${quoted(target)} commit -m fixture`, cwd));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /\.env would be committed/);
+    assert.doesNotMatch(result.stderr, /Cannot inspect git/);
+    assert.equal(guard(bash(`cd ${quoted(target)} && git -C "" commit -m fixture`, cwd)).code, 2);
   } finally { removeProject(dir); }
 });

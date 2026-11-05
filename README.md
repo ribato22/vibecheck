@@ -114,7 +114,9 @@ Fix:
 
 The agent reads that message and fixes it itself. The guard blocks only high-confidence key formats, allows secrets in `.env`, and checks every unpushed commit (not just the last one). Silence a false positive with a `vibecheck-ignore` comment on the line, or turn the guard off with `VIBECHECK_GUARD=off`.
 
-For literal Git commands, commit and push checks follow the repo selected by `git -C`, including quoted paths and repeated `-C` options. Each command in a chain keeps its own repo target. Shell variable expansion, command substitution, shell `cd`, and other repository overrides such as `--git-dir` are not interpreted; this guard is not a complete shell security boundary.
+For literal Git commands, commit and push checks follow the repo selected by `git -C`, including quoted paths and repeated `-C` options. Each command in a chain keeps its own repo target. The guard does not evaluate shell variables or command substitutions: it refuses commit/push when a `-C` path needs expansion. After `cd`, `pushd` or `popd` in the same Bash call, use a literal absolute `git -C '/path/to/repo' …`; otherwise the write is refused because its repo cannot be inspected. An unresolved `git add` also prevents a later commit in the same call from hiding newly staged files. These refusals mean the target is uncertain, not that a secret was found. Message-only expansion, literal dollar signs in quoted/escaped paths, and read-only Git commands remain allowed.
+
+This is still a bounded command parser, not a complete shell security boundary. Arbitrary wrappers, dynamic executables/subcommands, shell functions, and other repository overrides such as `--git-dir` or Git environment/config overrides are not interpreted. Use direct Git commands with literal absolute paths for guard coverage.
 
 ## Use it in CI
 

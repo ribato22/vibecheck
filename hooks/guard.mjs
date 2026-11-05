@@ -9,7 +9,7 @@
 
 import { readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { basename, extname, join } from 'node:path';
+import { basename, extname, isAbsolute, join } from 'node:path';
 import { findSecrets, mask, PUBLIC_ENV_RE, classifyEnvName } from '../skills/check/scripts/rules.mjs';
 
 const ENV_FILE = /^\.env(?:\..+)?$|\.env$|^\.dev\.vars$/;
@@ -89,13 +89,45 @@ function untrackedProblems(cwd) {
   return problems;
 }
 
-// shortcut: literal shell words only; expansions and shell cwd changes need a shell parser.
+// Keep substitutions opaque: finding their boundary must never evaluate their body.
+function shellExpansionEnd(command, start) {
+  if (command[start] === '`') {
+    for (let i = start + 1; i < command.length; i++) {
+      if (command[i] === '\\') i++;
+      else if (command[i] === '`') return i;
+    }
+    return -1;
+  }
+  let quote = '', depth = 1;
+  for (let i = start + 2; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === '\\' && quote !== "'") { i++; continue; }
+    if (quote !== "'" && (ch === '`' || (ch === '$' && command[i + 1] === '('))) {
+      i = shellExpansionEnd(command, i);
+      if (i === -1) return -1;
+    } else if (quote) {
+      if (ch === quote) quote = '';
+    } else if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '#' && /[\s;|&()]/.test(command[i - 1])) {
+      i = command.indexOf('\n', i);
+      if (i === -1) return -1;
+    }
+    else if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+// shortcut: inspect literal words only; reject Git writes with an unresolved repo context.
 function shellCommands(command) {
   const commands = [];
-  let words = [], word = '', quote = '', started = false;
+  let words = [], expansions = new Set(), word = '', quote = '', started = false, expands = false;
   const finishWord = () => {
-    if (started) words.push(word);
-    word = ''; started = false;
+    if (started) {
+      if (expands) expansions.add(words.length);
+      words.push(word);
+    }
+    word = ''; started = false; expands = false;
   };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
@@ -107,6 +139,14 @@ function shellCommands(command) {
         i++; continue;
       }
     }
+    if (quote !== "'" && (ch === '`' || (ch === '$' && command[i + 1] === '('))) {
+      const end = shellExpansionEnd(command, i);
+      if (end === -1) return [];
+      word += command.slice(i, end + 1);
+      expands = true; started = true; i = end;
+      continue;
+    }
+    if (quote !== "'" && ch === '$') expands = true;
     if (quote) {
       if (ch === quote) quote = '';
       else word += ch;
@@ -118,29 +158,42 @@ function shellCommands(command) {
       i = newline - 1;
     } else if (/[;&|\n()]/.test(ch)) {
       finishWord();
-      if (words.length) commands.push(words);
-      words = [];
+      if (words.length) commands.push({ words, expansions });
+      words = []; expansions = new Set();
     } else if (/\s/.test(ch)) finishWord();
     else { word += ch; started = true; }
   }
   if (quote) return [];
   finishWord();
-  if (words.length) commands.push(words);
+  if (words.length) commands.push({ words, expansions });
   return commands;
 }
 
 function gitCommands(command, cwd) {
   const commands = [];
-  for (const words of shellCommands(command)) {
-    if (!/^(?:.*[\\/])?git(?:\.exe)?$/.test(words[0])) continue;
+  let changedCwd = false, unknownAdd = false;
+  for (const { words, expansions } of shellCommands(command)) {
+    let first = 0;
+    while (/^[A-Za-z_]\w*=/.test(words[first] || '')) first++;
+    while (['command', 'builtin'].includes(words[first])) {
+      first++;
+      if (words[first] === '--') first++;
+    }
+    if (['cd', 'pushd', 'popd'].includes(words[first])) changedCwd = true;
+    if (!/^(?:.*[\\/])?git(?:\.exe)?$/.test(words[first] || '')) continue;
     const dirs = [];
-    let i = 1;
+    let dynamicRepo = false;
+    let i = first + 1;
     for (; i < words.length; i++) {
       const arg = words[i];
       if (arg === '-C') {
         if (++i === words.length) break;
+        dynamicRepo ||= expansions.has(i);
         dirs.push('-C', words[i]);
-      } else if (arg.startsWith('-C')) dirs.push('-C', arg.slice(2));
+      } else if (arg.startsWith('-C')) {
+        dynamicRepo ||= expansions.has(i);
+        dirs.push('-C', arg.slice(2));
+      }
       else if (arg === '--bare') dirs.push(arg);
       else if (arg === '-c') i++;
       else if (arg.startsWith('-c') || arg.startsWith('--config-env=') || [
@@ -151,6 +204,12 @@ function gitCommands(command, cwd) {
     }
     const verb = words[i];
     if (!['add', 'commit', 'push'].includes(verb)) continue;
+    const firstDir = dirs.find((arg, j) => dirs[j - 1] === '-C' && arg !== '');
+    if (dynamicRepo || (changedCwd && !isAbsolute(firstDir || '')) || (verb === 'commit' && unknownAdd)) {
+      if (verb === 'add') unknownAdd = true;
+      else commands.push({ problem: `Cannot inspect git ${verb}: a repository path needs shell expansion, depends on a shell directory change, or follows an unresolved git add. Use git -C with a literal absolute repository path.` });
+      continue;
+    }
     // Let Git apply repeated -C options, including empty paths and symlink/.. traversal.
     let root = git([...dirs, 'rev-parse', '--show-toplevel'], cwd);
     if (!root && verb === 'push') root = git([...dirs, 'rev-parse', '--absolute-git-dir'], cwd);
@@ -183,6 +242,7 @@ function checkGit(command, cwd) {
   const diffArgs = ['-U0', '--no-color', '--no-ext-diff'];
   const addsFiles = new Set();
   for (const cmd of gitCommands(command, cwd)) {
+    if (cmd.problem) { problems.push(cmd.problem); continue; }
     const target = cmd.cwd;
     if (cmd.verb === 'add') addsFiles.add(target);
     if (cmd.verb === 'commit') {
@@ -226,9 +286,12 @@ function main() {
   }
   if (!problems.length) return;
 
+  const uncertainRepo = problems.some((p) => p.startsWith('Cannot inspect git '));
+  if (uncertainRepo) advice = ['Use git -C with a literal absolute repository path and run directory changes separately.'];
   const unique = [...new Set(problems)].slice(0, 15);
   process.stderr.write([
-    'vibecheck guard blocked this: it would put secrets where they do not belong.',
+    uncertainRepo ? 'vibecheck guard blocked this: the Git repository cannot be inspected safely.'
+      : 'vibecheck guard blocked this: it would put secrets where they do not belong.',
     '',
     ...unique.map((p) => `  - ${p}`),
     '',
