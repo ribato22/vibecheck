@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.9 (2026-11-05)
+
 - Close eight additional observed shell paths: keep Git writes visible across redirections, refuse unsupported global Git options and per-call push configuration, retain uncertainty from bare context declarations and printf/read mutations, and refuse trap/hash execution. Add regressions and safe/no-execution controls; document conservative refusals and remaining parser limits.
 
 ## 1.2.8 (2026-11-05)
