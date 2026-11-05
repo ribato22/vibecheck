@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.2 (2026-11-05)
+
 - Refuse Git commit/push when a `-C` path requires shell expansion or the repository depends on an untracked shell directory change. Keep substitutions opaque and never execute them; require a literal absolute `git -C` target to inspect writes after `cd`, and retain uncertainty from an unresolved earlier `git add`. Add regressions for variable/substitution paths, directory changes, shell prefixes, literal dollar paths, safe message expansion and read-only controls.
 
 ## 1.2.1 (2026-11-05)
