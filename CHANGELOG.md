@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.1 (2026-11-05)
+
 - Guard commit/push checks now follow literal `git -C` targets instead of the session repo, including quoted/repeated paths and separate command targets. Add regression coverage for staged `.env`, earlier unpushed secret commits, safe targets, and Git option/message boundaries.
 
 ## 1.2.0 (2026-11-05)
