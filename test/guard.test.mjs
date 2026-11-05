@@ -361,6 +361,106 @@ test('assignments and shell builtins do not hide the Git command or directory ch
   } finally { removeProject(dir); }
 });
 
+test('env assignment wrappers keep Git commit and push inspection on the literal target', () => {
+  const { dir, cwd, target, remote, main } = pushFixture();
+  try {
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    git(target, 'add', '.env');
+    for (const prefix of ['env VIBECHECK_FIXTURE=1', '/usr/bin/env FIRST=one SECOND="two words"', 'command env -- VIBECHECK_FIXTURE=1', 'OUTER=one env INNER=two']) {
+      const commit = guard(bash(`${prefix} git -C ${quoted(target)} commit -m fixture`, cwd));
+      assert.equal(commit.code, 2, prefix);
+      assert.match(commit.stderr, /\.env would be committed/);
+      assert.ok(!commit.stderr.includes(keys.openai));
+      const push = guard(bash(`${prefix} git -C ${quoted(target)} push origin secret-history`, cwd));
+      assert.equal(push.code, 2, prefix);
+      assert.match(push.stderr, /OpenAI API key/);
+      assert.ok(!push.stderr.includes(keys.openai));
+    }
+    assert.equal(git(target, 'rev-parse', 'HEAD').trim(), main);
+    assert.equal(git(remote, 'rev-parse', 'main').trim(), main);
+    assert.match(git(target, 'diff', '--cached', '--name-only'), /^\.env$/m);
+  } finally { removeProject(dir); }
+});
+
+test('explicit repository overrides refuse writes even with an absolute git -C', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const overrides = [
+      `--git-dir=${quoted(join(target, '.git'))} --work-tree=${quoted(target)}`,
+      `--git-dir ${quoted(join(target, '.git'))} --work-tree ${quoted(target)}`,
+      `-C ${quoted(cwd)} --git-dir=${quoted(join(target, '.git'))}`,
+      `--work-tree=${quoted(target)} -C ${quoted(cwd)}`,
+    ];
+    for (const options of overrides) {
+      for (const verb of ['commit -m fixture', 'push origin main']) {
+        const result = guard(bash(`git ${options} ${verb}`, cwd));
+        assert.equal(result.code, 2, `${options} ${verb}`);
+        assert.match(result.stderr, /Cannot inspect git (commit|push).*overrides/);
+      }
+      assert.equal(guard(bash(`git ${options} status --short`, cwd)).code, 0, options);
+    }
+  } finally { removeProject(dir); }
+});
+
+test('inline repository and index environment overrides refuse writes without evaluating values', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const marker = join(dir, 'must-not-exist');
+    for (const prefix of [
+      `GIT_DIR=${quoted(join(target, '.git'))} GIT_WORK_TREE=${quoted(target)}`,
+      `GIT_WORK_TREE=${quoted(target)}`,
+      `GIT_INDEX_FILE=${quoted(join(target, '.git', 'index'))}`,
+      `GIT_COMMON_DIR=${quoted(join(target, '.git'))}`,
+      `env LABEL=fixture GIT_DIR=${quoted(join(target, '.git'))}`,
+      `GIT_DIR="$(touch ${quoted(marker)})"`,
+    ]) {
+      for (const verb of ['commit -m fixture', 'push origin main']) {
+        const result = guard(bash(`${prefix} git -C ${quoted(cwd)} ${verb}`, cwd));
+        assert.equal(result.code, 2, `${prefix} ${verb}`);
+        assert.match(result.stderr, /Cannot inspect git (commit|push).*overrides/);
+      }
+      assert.equal(guard(bash(`${prefix} git status --short`, cwd)).code, 0, prefix);
+    }
+    assert.equal(existsSync(marker), false, 'inspection must not run assignment substitutions');
+  } finally { removeProject(dir); }
+});
+
+test('override-selected git add keeps a later literal commit uncertain', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    for (const prefix of [
+      `git --git-dir=${quoted(join(target, '.git'))} --work-tree=${quoted(target)}`,
+      `GIT_DIR=${quoted(join(target, '.git'))} GIT_WORK_TREE=${quoted(target)} git`,
+      `env GIT_INDEX_FILE=${quoted(join(target, '.git', 'index'))} git -C ${quoted(target)}`,
+    ]) {
+      const result = guard(bash(`${prefix} add . && git -C ${quoted(target)} commit -m fixture`, cwd));
+      assert.equal(result.code, 2, prefix);
+      assert.match(result.stderr, /Cannot inspect git commit.*unresolved git add/);
+      assert.ok(!result.stderr.includes(keys.openai));
+    }
+    assert.equal(git(target, 'diff', '--cached', '--name-only'), '', 'the guard must not stage the file');
+  } finally { removeProject(dir); }
+});
+
+test('safe env-wrapped Git writes and non-repository assignments remain inspectable', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(cwd, '.env'), 'SECRET=synthetic\n');
+    git(cwd, 'add', '.env');
+    writeFileSync(join(target, 'safe.txt'), 'safe\n');
+    git(target, 'add', 'safe.txt');
+    const before = git(target, 'rev-parse', 'HEAD');
+    for (const prefix of ['env', 'env LABEL="two words"', 'command env -- LABEL=fixture', 'GIT_AUTHOR_NAME=fixture', 'GIT_TERMINAL_PROMPT=0 env LABEL=fixture']) {
+      assert.equal(guard(bash(`${prefix} git -C ${quoted(target)} commit -m 'GIT_DIR=x --git-dir=elsewhere'`, cwd)).code, 0, prefix);
+      assert.equal(guard(bash(`${prefix} git -C ${quoted(target)} push origin main`, cwd)).code, 0, prefix);
+    }
+    assert.equal(guard(bash('echo "GIT_DIR=x git commit --git-dir=elsewhere"', cwd)).code, 0);
+    assert.equal(git(target, 'rev-parse', 'HEAD'), before);
+    assert.match(git(target, 'diff', '--cached', '--name-only'), /^safe.txt$/m);
+  } finally { removeProject(dir); }
+});
+
 test('literal dollar paths are inspected rather than treated as shell expansion', () => {
   const { dir, cwd } = gitFixture();
   try {

@@ -180,10 +180,16 @@ function gitCommands(command, cwd, deadline) {
       first++;
       if (words[first] === '--') first++;
     }
+    if (/^(?:.*[\\/])?env(?:\.exe)?$/.test(words[first] || '')) {
+      first++;
+      if (words[first] === '--') first++;
+      while (/^[A-Za-z_]\w*=/.test(words[first] || '')) first++;
+    }
     if (['cd', 'pushd', 'popd'].includes(words[first])) changedCwd = true;
     if (!/^(?:.*[\\/])?git(?:\.exe)?$/.test(words[first] || '')) continue;
     const dirs = [];
     let dynamicRepo = false;
+    let repoOverride = words.slice(0, first).some((word) => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)=/.test(word));
     let i = first + 1;
     for (; i < words.length; i++) {
       const arg = words[i];
@@ -196,6 +202,8 @@ function gitCommands(command, cwd, deadline) {
         dirs.push('-C', arg.slice(2));
       }
       else if (arg === '--bare') dirs.push(arg);
+      else if (['--git-dir', '--work-tree'].includes(arg)) { repoOverride = true; i++; }
+      else if (arg.startsWith('--git-dir=') || arg.startsWith('--work-tree=')) repoOverride = true;
       else if (arg === '-c') i++;
       else if (arg.startsWith('-c') || arg.startsWith('--config-env=') || [
         '-p', '-P', '--paginate', '--no-pager', '--no-optional-locks', '--no-replace-objects',
@@ -206,8 +214,9 @@ function gitCommands(command, cwd, deadline) {
     const verb = words[i];
     if (!['add', 'commit', 'push'].includes(verb)) continue;
     const firstDir = dirs.find((arg, j) => dirs[j - 1] === '-C' && arg !== '');
-    if (dynamicRepo || (changedCwd && !isAbsolute(firstDir || '')) || (verb === 'commit' && unknownAdd)) {
+    if (repoOverride || dynamicRepo || (changedCwd && !isAbsolute(firstDir || '')) || (verb === 'commit' && unknownAdd)) {
       if (verb === 'add') unknownAdd = true;
+      else if (repoOverride) commands.push({ problem: `Cannot inspect git ${verb}: repository or index overrides are not supported. Use direct git -C with a literal absolute repository path and no Git overrides.` });
       else commands.push({ problem: `Cannot inspect git ${verb}: a repository path needs shell expansion, depends on a shell directory change, or follows an unresolved git add. Use git -C with a literal absolute repository path.` });
       continue;
     }
