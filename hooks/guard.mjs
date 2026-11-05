@@ -91,7 +91,8 @@ function untrackedProblems(cwd) {
 }
 
 // Keep substitutions opaque: finding their boundary must never evaluate their body.
-function shellExpansionEnd(command, start, openingLength = 2, pair = '()', parameterDoubleQuoted = false) {
+function shellExpansionEnd(command, start, openingLength = 2, pair = '()', parameterDoubleQuoted = false, nesting = 0) {
+  if (nesting > 16) return -1;
   if (command[start] === '`') {
     for (let i = start + 1; i < command.length; i++) {
       if (command[i] === '\\') i++;
@@ -104,7 +105,7 @@ function shellExpansionEnd(command, start, openingLength = 2, pair = '()', param
     const ch = command[i];
     if (ch === '\\' && quote !== "'") { i++; continue; }
     if (quote !== "'" && (ch === '`' || (ch === '$' && command[i + 1] === '('))) {
-      i = shellExpansionEnd(command, i);
+      i = shellExpansionEnd(command, i, 2, '()', false, nesting + 1);
       if (i === -1) return -1;
     } else if (quote) {
       if (ch === quote) quote = '';
@@ -119,25 +120,57 @@ function shellExpansionEnd(command, start, openingLength = 2, pair = '()', param
   return -1;
 }
 
-// shortcut: inspect literal words only; reject Git writes with an unresolved repo context.
-function shellCommands(command) {
+const shellProblem = (reason) => ({ problem: `Cannot inspect shell command: ${reason}. Use separate literal commands.` });
+
+// Heredoc text has no shell quote syntax; only escapes suppress its substitutions.
+function substitutionCommands(text, deadline, depth, ignoreQuotes = false) {
+  if (depth > 8 || Date.now() >= deadline) return [shellProblem('the parsing budget is exhausted')];
+  const commands = [];
+  let quote = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\\' && (ignoreQuotes || quote !== "'")) { i++; continue; }
+    if ((ignoreQuotes || quote !== "'") && (ch === '`' || (ch === '$' && ['(', '{'].includes(text[i + 1])))) {
+      const parameter = text[i + 1] === '{';
+      const end = shellExpansionEnd(text, i, 2, parameter ? '{}' : '()', parameter && (ignoreQuotes || quote === '"'));
+      if (end === -1) return [shellProblem('an expansion is incomplete or too deeply nested')];
+      const body = text.slice(i + (ch === '`' ? 1 : 2), end);
+      if (ch === '`' && /\\[$`\\]/.test(body)) return [shellProblem('legacy backtick escapes are unsupported')];
+      commands.push(...(parameter || text[i + 2] === '('
+        ? substitutionCommands(body, deadline, depth + 1, ignoreQuotes || quote === '"')
+        : shellCommands(body, deadline, depth + 1)));
+      i = end;
+    } else if (!ignoreQuotes) {
+      if (quote) { if (ch === quote) quote = ''; }
+      else if (ch === '"' || ch === "'") quote = ch;
+    }
+  }
+  return commands;
+}
+
+// shortcut: literal shell syntax only; use a full parser if more interpreters must be supported.
+function shellCommands(command, deadline, depth = 0) {
+  if (depth > 8 || command.length > 131072 || Date.now() >= deadline) return [shellProblem('the parsing budget is exhausted')];
   const commands = [];
   let words = [], expansions = new Set(), word = '', quote = '', started = false, expands = false;
-  let heredoc = null, heredocs = [];
+  let heredoc = null, heredocs = [], quotedWord = false, lineStart = 0;
   const finishWord = () => {
     if (started) {
       if (heredoc !== null) {
-        heredocs.push({ delimiter: word, stripTabs: heredoc });
+        heredocs.push({ delimiter: word, stripTabs: heredoc, quoted: quotedWord });
         heredoc = null;
       } else {
         if (expands) expansions.add(words.length);
         words.push(word);
       }
     }
-    word = ''; started = false; expands = false;
+    word = ''; started = false; expands = false; quotedWord = false;
   };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
+    if (!quote && ch === '(' && command[i + 1] === ')' && /^[A-Za-z_]\w*$/.test(started && !words.length ? word : !started && words.length === 1 ? words[0] : '')) {
+      return [...commands, shellProblem('shell function definitions are not supported')];
+    }
     // Arithmetic and assignment indexes can contain shifts without starting a heredoc.
     if (!quote && heredoc === null && ch === '(' && command[i + 1] === '(') {
       const end = shellExpansionEnd(command, i, 1);
@@ -155,8 +188,9 @@ function shellCommands(command) {
     }
     if (ch === '\\' && quote !== "'") {
       const next = command[i + 1];
-      if (next === undefined) return [];
+      if (next === undefined) return [...commands, shellProblem('a trailing escape is incomplete')];
       if (!quote || /["\\$`\n]/.test(next)) {
+        quotedWord = true;
         if (next !== '\n') { word += next; started = true; }
         i++; continue;
       }
@@ -164,7 +198,8 @@ function shellCommands(command) {
     if (quote !== "'" && (ch === '`' || (ch === '$' && ['(', '{'].includes(command[i + 1])))) {
       const parameter = command[i + 1] === '{';
       const end = shellExpansionEnd(command, i, 2, parameter ? '{}' : '()', parameter && quote === '"');
-      if (end === -1) return [];
+      if (end === -1) return [...commands, shellProblem('an expansion is incomplete or too deeply nested')];
+      if (heredoc === null) commands.push(...substitutionCommands(command.slice(i, end + 1), deadline, depth, parameter && quote === '"'));
       word += command.slice(i, end + 1);
       expands = true; started = true; i = end;
       continue;
@@ -174,7 +209,7 @@ function shellCommands(command) {
       if (ch === quote) quote = '';
       else word += ch;
     } else if (ch === '"' || ch === "'") {
-      quote = ch; started = true;
+      quote = ch; started = true; quotedWord = true;
     } else if (ch === '<' && command[i + 1] === '<' && command[i - 1] !== '<' && command[i + 2] !== '<') {
       finishWord(); heredoc = command[i + 2] === '-'; i += heredoc ? 2 : 1;
     } else if (ch === '#' && !started) {
@@ -183,51 +218,93 @@ function shellCommands(command) {
       i = newline - 1;
     } else if (/[;&|\n()]/.test(ch)) {
       finishWord();
-      if (words.length) commands.push({ words, expansions });
+      if (words.length) commands.push({ words, expansions, depth });
       words = []; expansions = new Set();
       if (ch === '\n' && heredocs.length) {
         let cursor = i + 1;
+        const nested = [];
         for (const doc of heredocs) {
-          let closed = false;
+          let closed = false, body = '';
           while (cursor <= command.length) {
             const end = command.indexOf('\n', cursor);
             const line = command.slice(cursor, end === -1 ? command.length : end);
             cursor = end === -1 ? command.length + 1 : end + 1;
             if ((doc.stripTabs ? line.replace(/^\t+/, '') : line) === doc.delimiter) { closed = true; break; }
+            body += line + '\n';
           }
-          if (!closed) return commands;
+          if (!closed) return [...commands, shellProblem('a heredoc is incomplete')];
+          if (!doc.quoted) nested.push(...substitutionCommands(body, deadline, depth, true));
         }
+        commands.splice(lineStart, 0, ...nested);
         heredocs = []; i = cursor - 1;
       }
+      if (ch === '\n') lineStart = commands.length;
     } else if (/\s/.test(ch)) finishWord();
     else { word += ch; started = true; }
   }
-  if (quote) return [];
+  if (quote || heredoc !== null || heredocs.length) return [...commands, shellProblem('a quote or heredoc is incomplete')];
   finishWord();
-  if (words.length) commands.push({ words, expansions });
+  if (words.length) commands.push({ words, expansions, depth });
   return commands;
 }
 
 function gitCommands(command, cwd, deadline) {
   const commands = [];
-  let changedCwd = false, unknownAdd = false;
-  for (const { words, expansions } of shellCommands(command)) {
-    let first = 0;
-    while (/^[A-Za-z_]\w*=/.test(words[first] || '')) first++;
-    while (['command', 'builtin'].includes(words[first])) {
+  let changedCwd = false, unknownAdd = false, persistentRepoOverride = false, aliasSettingsChanged = false, builtins = null, parsedSize = command.length;
+  const parsedCommands = shellCommands(command, deadline);
+  for (let at = 0; at < parsedCommands.length; at++) {
+    if (at >= 1024 || Date.now() >= deadline) { commands.push(shellProblem('the parsing budget is exhausted')); break; }
+    const parsed = parsedCommands[at];
+    if (parsed.problem) { commands.push(parsed); continue; }
+    const { words, expansions } = parsed;
+    let first = 0, envOverride = false;
+    while (first < words.length) {
+      if (/^[A-Za-z_]\w*=/.test(words[first])) { first++; continue; }
+      if (['command', 'builtin', 'if', 'elif', 'then', 'else', 'while', 'until', 'do', '!', '{'].includes(words[first])) {
+        first++;
+        if (words[first] === '--') first++;
+        continue;
+      }
+      if (!/^(?:.*[\\/])?env(?:\.exe)?$/.test(words[first])) break;
       first++;
+      while (words[first]?.startsWith('-') && words[first] !== '--') {
+        const option = words[first++];
+        let name;
+        if (option === '-u' || option === '--unset') name = words[first++];
+        else if (option.startsWith('--unset=')) name = option.slice(8);
+        else { commands.push(shellProblem('this env option is unsupported')); break; }
+        envOverride ||= expansions.has(first - 1) || /^(?:GIT_|HOME$|XDG_CONFIG_HOME$|PATH$)/.test(name || '');
+      }
       if (words[first] === '--') first++;
     }
-    if (/^(?:.*[\\/])?env(?:\.exe)?$/.test(words[first] || '')) {
-      first++;
-      if (words[first] === '--') first++;
-      while (/^[A-Za-z_]\w*=/.test(words[first] || '')) first++;
+    if (first === words.length || ['export', 'declare', 'typeset', 'readonly'].includes(words[first])) {
+      persistentRepoOverride ||= words.some((word) => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)=/.test(word));
     }
     if (['cd', 'pushd', 'popd'].includes(words[first])) changedCwd = true;
+    if (expansions.has(first)) {
+      commands.push({ problem: 'Cannot inspect shell command: the executable requires expansion. Use a literal executable and separate commands.' });
+      continue;
+    }
+    if (words[first] === 'function') { commands.push(shellProblem('shell function definitions are not supported')); continue; }
+    const inlineRepoOverride = envOverride || words.slice(0, first).some((word) => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)=/.test(word));
+    if (/^(?:.*[\\/])?(?:sh|bash|dash|zsh|ksh)(?:\.exe)?$/.test(words[first] || '')) {
+      persistentRepoOverride ||= inlineRepoOverride;
+      let bodyAt = first + 1;
+      while (/^-[^-]/.test(words[bodyAt] || '') && !words[bodyAt].includes('c')) bodyAt++;
+      if (!/^-[^-]*c/.test(words[bodyAt] || '') || expansions.has(bodyAt + 1) || words[bodyAt + 1] === undefined) {
+        commands.push(shellProblem('the shell body is not a literal -c command'));
+      } else {
+        const body = words[bodyAt + 1];
+        parsedSize += body.length;
+        if (parsedSize > 131072) commands.push(shellProblem('the parsing budget is exhausted'));
+        else parsedCommands.splice(at + 1, 0, ...shellCommands(body, deadline, parsed.depth + 1));
+      }
+      continue;
+    }
     if (!/^(?:.*[\\/])?git(?:\.exe)?$/.test(words[first] || '')) continue;
-    const dirs = [];
+    const dirs = [], config = [];
     let dynamicRepo = false;
-    let repoOverride = words.slice(0, first).some((word) => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)=/.test(word));
+    let repoOverride = persistentRepoOverride || inlineRepoOverride;
     let i = first + 1;
     for (; i < words.length; i++) {
       const arg = words[i];
@@ -242,15 +319,31 @@ function gitCommands(command, cwd, deadline) {
       else if (arg === '--bare') dirs.push(arg);
       else if (['--git-dir', '--work-tree'].includes(arg)) { repoOverride = true; i++; }
       else if (arg.startsWith('--git-dir=') || arg.startsWith('--work-tree=')) repoOverride = true;
-      else if (arg === '-c') i++;
-      else if (arg.startsWith('-c') || arg.startsWith('--config-env=') || [
+      else if (arg === '-c') { config.push(arg, words[++i] || ''); dynamicRepo ||= expansions.has(i); }
+      else if (arg.startsWith('-c')) { config.push(arg); dynamicRepo ||= expansions.has(i); }
+      else if (arg.startsWith('--config-env=')) repoOverride = true;
+      else if ([
         '-p', '-P', '--paginate', '--no-pager', '--no-optional-locks', '--no-replace-objects',
         '--no-lazy-fetch', '--no-advice', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
       ].includes(arg)) continue;
       else break;
     }
     const verb = words[i];
-    if (!['add', 'commit', 'push'].includes(verb)) continue;
+    if (expansions.has(i)) {
+      commands.push({ problem: 'Cannot inspect git command: the subcommand requires expansion. Use a literal Git subcommand.' });
+      continue;
+    }
+    if (!['add', 'commit', 'push'].includes(verb)) {
+      if (verb === 'config' && words.slice(i + 1).some((arg) => /^alias\./i.test(arg))) aliasSettingsChanged = true;
+      if (verb && !verb.startsWith('-')) {
+        builtins ??= git(['--list-cmds=builtins'], cwd, { timeout: Math.max(1, deadline - Date.now()) })?.trim().split(/\s+/);
+        if (builtins?.includes(verb)) continue;
+        const alias = aliasSettingsChanged || changedCwd || dynamicRepo || repoOverride || Date.now() >= deadline ? null
+          : git([...dirs, ...config, 'config', '--default', '', '--get', `alias.${verb}`], cwd, { timeout: Math.max(1, deadline - Date.now()), requireQuiet: true });
+        if (alias === null || alias.trim()) commands.push(shellProblem('Git alias execution cannot be inspected'));
+      }
+      continue;
+    }
     const firstDir = dirs.find((arg, j) => dirs[j - 1] === '-C' && arg !== '');
     if (repoOverride || dynamicRepo || (changedCwd && !isAbsolute(firstDir || '')) || (verb === 'commit' && unknownAdd)) {
       if (verb === 'add') unknownAdd = true;
@@ -416,12 +509,12 @@ function main() {
   }
   if (!problems.length) return;
 
-  const uncertainRepo = problems.some((p) => p.startsWith('Cannot inspect git '));
+  const uncertainRepo = problems.some((p) => p.startsWith('Cannot inspect '));
   if (problems.some((p) => p.startsWith('Cannot inspect git push:'))) advice = ['Use a literal repository path and explicit local commit source refs; verify complete local history and simplify push options.'];
-  else if (uncertainRepo) advice = ['Use git -C with a literal absolute repository path and run directory changes separately.'];
+  else if (uncertainRepo) advice = ['Use literal executable/subcommand names and git -C with a literal absolute repository path; separate shell indirection and directory changes.'];
   const unique = [...new Set(problems)].slice(0, 15);
   process.stderr.write([
-    uncertainRepo ? 'vibecheck guard blocked this: the Git repository cannot be inspected safely.'
+    uncertainRepo ? 'vibecheck guard blocked this: the command cannot be inspected safely.'
       : 'vibecheck guard blocked this: it would put secrets where they do not belong.',
     '',
     ...unique.map((p) => `  - ${p}`),

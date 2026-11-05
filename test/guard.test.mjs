@@ -382,6 +382,194 @@ test('env assignment wrappers keep Git commit and push inspection on the literal
   } finally { removeProject(dir); }
 });
 
+test('env unset options do not hide literal Git commits or pushes', () => {
+  const { dir, cwd, target, remote, main } = pushFixture();
+  try {
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    git(target, 'add', '.env');
+    for (const prefix of ['env -u VIBECHECK_UNUSED', 'env --unset=VIBECHECK_UNUSED', 'command env -u VIBECHECK_UNUSED', 'env -u VIBECHECK_UNUSED --']) {
+      for (const verb of ['commit -m fixture', 'push origin secret-history']) {
+        const result = guard(bash(`${prefix} git -C ${quoted(target)} ${verb}`, cwd));
+        assert.equal(result.code, 2, `${prefix} ${verb}`);
+        assert.ok(!result.stderr.includes(keys.openai));
+      }
+    }
+    assert.equal(git(target, 'rev-parse', 'HEAD').trim(), main);
+    assert.equal(git(remote, 'rev-parse', 'main').trim(), main);
+    assert.match(git(target, 'diff', '--cached', '--name-only'), /^\.env$/m);
+  } finally { removeProject(dir); }
+});
+
+test('inline shell branches keep literal Git writes visible', () => {
+  const { dir, cwd, target } = pushFixture();
+  try {
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    git(target, 'add', '.env');
+    for (const verb of ['commit -m fixture', 'push origin secret-history']) {
+      const write = `git -C ${quoted(target)} ${verb}`;
+      for (const command of [`if true; then ${write}; fi`, `if false; then :; else ${write}; fi`, `if false; then :; elif true; then ${write}; fi`]) {
+        const result = guard(bash(command, cwd));
+        assert.equal(result.code, 2, command);
+        assert.ok(!result.stderr.includes(keys.openai));
+      }
+    }
+  } finally { removeProject(dir); }
+});
+
+test('exported Git repository variables keep later writes uncertain', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    for (const setup of [
+      `export GIT_DIR=${quoted(join(target, '.git'))} GIT_WORK_TREE=${quoted(target)}`,
+      `GIT_DIR=${quoted(join(target, '.git'))}`,
+      `declare GIT_INDEX_FILE=${quoted(join(target, '.git', 'index'))}`,
+      `if true; then export GIT_DIR=${quoted(join(target, '.git'))} GIT_WORK_TREE=${quoted(target)}; fi`,
+    ]) {
+      for (const verb of ['commit -m fixture', 'push origin main']) {
+        const result = guard(bash(`(${setup}; git -C ${quoted(cwd)} ${verb})`, cwd));
+        assert.equal(result.code, 2, `${setup} ${verb}`);
+        assert.match(result.stderr, /Cannot inspect git (commit|push).*overrides/);
+      }
+      assert.equal(guard(bash(`${setup}; git status --short`, cwd)).code, 0);
+    }
+    assert.equal(guard(bash(`export VIBECHECK_FIXTURE=1; git -C ${quoted(cwd)} commit -m safe`, cwd)).code, 0);
+  } finally { removeProject(dir); }
+});
+
+test('unresolved executable and Git verb expansions refuse execution', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const marker = join(dir, 'must-not-exist');
+    for (const verb of ['commit -m fixture', 'push origin main']) {
+      const result = guard(bash(`(fixture_git=git; "$fixture_git" -C ${quoted(target)} ${verb})`, cwd));
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /Cannot inspect.*executable/);
+    }
+    const dynamicVerb = guard(bash(`fixture_verb=commit; git -C ${quoted(target)} "$fixture_verb" -m fixture`, cwd));
+    assert.equal(dynamicVerb.code, 2);
+    assert.match(dynamicVerb.stderr, /Cannot inspect.*subcommand/);
+    assert.equal(guard(bash(`"$(touch ${quoted(marker)}; printf git)" status`, cwd)).code, 2);
+    assert.equal(existsSync(marker), false);
+  } finally { removeProject(dir); }
+});
+
+test('Git aliases and shell function definitions refuse indirection without running it', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const marker = join(dir, 'must-not-exist');
+    for (const verb of ['commit', 'push']) {
+      for (const option of [`-c alias.fixture=${verb}`, `-calias.fixture=${verb}`]) {
+        const result = guard(bash(`git -C ${quoted(target)} ${option} fixture -m fixture`, cwd));
+        assert.equal(result.code, 2);
+        assert.match(result.stderr, /Cannot inspect.*alias/);
+      }
+      git(target, 'config', 'alias.fixture', verb);
+      assert.equal(guard(bash(`git -C ${quoted(target)} fixture`, cwd)).code, 2);
+    }
+    git(target, 'config', 'alias.fixture', `!touch ${quoted(marker)}`);
+    assert.equal(guard(bash(`git -C ${quoted(target)} fixture`, cwd)).code, 2);
+    git(target, 'config', '--unset', 'alias.fixture');
+    assert.equal(guard(bash(`git -C ${quoted(target)} config alias.fixture commit; git -C ${quoted(target)} fixture`, cwd)).code, 2);
+    for (const command of [
+      `(fixture_git(){ git "$@"; }; fixture_git -C ${quoted(target)} commit -m fixture)`,
+      `function fixture_git { touch ${quoted(marker)}; }; fixture_git`,
+    ]) {
+      const result = guard(bash(command, cwd));
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /Cannot inspect.*function/);
+    }
+    assert.equal(guard(bash(`printf '%s' 'fixture_git(){ git commit; }'`, cwd)).code, 0);
+    assert.equal(guard(bash(`git -C ${quoted(target)} status`, cwd)).code, 0);
+    assert.equal(existsSync(marker), false);
+  } finally { removeProject(dir); }
+});
+
+test('literal shell bodies and executable substitutions inspect nested Git writes without evaluation', () => {
+  const { dir, cwd, target, remote, main } = pushFixture();
+  try {
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    git(target, 'add', '.env');
+    const marker = join(dir, 'must-not-exist');
+    for (const verb of ['commit -m fixture', 'push origin secret-history']) {
+      const write = `touch ${quoted(marker)}; git -C ${quoted(target)} ${verb}`;
+      for (const command of [
+        `/bin/sh -c ${quoted(write)}`,
+        `env -u UNUSED bash -lc ${quoted(`/bin/sh -c ${quoted(write)}`)}`,
+        `printf '%s\\n' "$(${write})"`,
+        `printf '%s\\n' \`${write}\``,
+        `printf '%s' "\${UNSET:-$(${write})}"`,
+        `printf '%s' "\${UNSET:-'$(${write})'}"`,
+        `cat <<EXPANDING\n'$(${write})'\nEXPANDING\n`,
+        `cat <<EXPANDING\n\`${write}\`\nEXPANDING\n`,
+      ]) {
+        const result = guard(bash(command, cwd));
+        assert.equal(result.code, 2, command);
+        assert.match(result.stderr, /\.env would be committed|OpenAI API key/);
+        assert.ok(!result.stderr.includes(keys.openai));
+      }
+    }
+    for (const command of [
+      `/bin/sh -c ${quoted(`git -C ${quoted(cwd)} commit -m safe`)}`,
+      `cat <<'LITERAL'\n$(git -C ${quoted(target)} commit -m fixture)\nLITERAL\n`,
+      `cat <<\\LITERAL\n$(git -C ${quoted(target)} commit -m fixture)\nLITERAL\n`,
+      `cat <<EXPANDING\n\\$(git -C ${quoted(target)} commit -m fixture)\nEXPANDING\n`,
+    ]) assert.equal(guard(bash(command, cwd)).code, 0, command);
+    assert.equal(guard(bash('sh -c "$BODY"', cwd)).code, 2);
+    const legacy = 'printf \'%s\\n\' "`printf \'%s\' \\`git -C ' + quoted(target) + ' commit -m fixture\\``"';
+    const legacyResult = guard(bash(legacy, cwd));
+    assert.equal(legacyResult.code, 2);
+    assert.match(legacyResult.stderr, /Cannot inspect.*legacy backtick/);
+    assert.equal(existsSync(marker), false, 'inspection must never execute nested bodies');
+    assert.equal(git(target, 'rev-parse', 'HEAD').trim(), main);
+    assert.equal(git(remote, 'rev-parse', 'main').trim(), main);
+    assert.match(git(target, 'diff', '--cached', '--name-only'), /^\.env$/m);
+  } finally { removeProject(dir); }
+});
+
+test('nested git add preserves commit scope and incomplete or excessive parsing refuses execution', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, '.env'), 'SECRET=synthetic\n');
+    const add = `git -C ${quoted(target)} add .`;
+    const commit = `git -C ${quoted(target)} commit -m fixture`;
+    for (const command of [
+      `/bin/sh -c ${quoted(`${add}; ${commit}`)}`,
+      `printf '%s' "$(${add})"; ${commit}`,
+      `${commit} <<EXPANDING\n$(${add})\nEXPANDING\n`,
+    ]) {
+      const result = guard(bash(command, cwd));
+      assert.equal(result.code, 2, command);
+      assert.match(result.stderr, /\.env would be committed/);
+    }
+    for (const command of ["printf 'unfinished", 'echo $(unfinished', 'cat <<END\nunfinished', `printf '%s' ${'x'.repeat(131073)}`, 'true;'.repeat(1025)]) {
+      const result = guard(bash(command, cwd));
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /Cannot inspect shell command/);
+    }
+    let nested = 'printf safe';
+    for (let i = 0; i < 10; i++) nested = `sh -c ${quoted(nested)}`;
+    assert.equal(guard(bash(nested, cwd)).code, 2);
+    assert.equal(git(target, 'diff', '--cached', '--name-only'), '', 'inspection must not stage the fixture');
+  } finally { removeProject(dir); }
+});
+
+test('literal shell wrappers retain inherited repository override uncertainty', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    for (const prefix of [
+      `GIT_DIR=${quoted(join(target, '.git'))} GIT_WORK_TREE=${quoted(target)}`,
+      'env -u GIT_INDEX_FILE',
+    ]) {
+      for (const verb of ['commit -m fixture', 'push origin main']) {
+        const command = `${prefix} sh -c ${quoted(`sh -c ${quoted(`git -C ${quoted(cwd)} ${verb}`)}`)}`;
+        const result = guard(bash(command, cwd));
+        assert.equal(result.code, 2, command);
+        assert.match(result.stderr, /Cannot inspect git (commit|push).*overrides/);
+      }
+    }
+  } finally { removeProject(dir); }
+});
+
 test('explicit repository overrides refuse writes even with an absolute git -C', () => {
   const { dir, cwd, target } = gitFixture();
   try {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Close nine observed shell-indirection gaps in the Bash Git guard: `env -u`, literal shell `-c` bodies, function definitions, command substitutions, expanding heredocs, inline conditions, dynamic executables, persistent repo/index assignments and Git aliases. Inspect literal nested bodies without executing them; refuse unresolved execution and bounded/incomplete parsing. Preserve quoted-heredoc and safe literal controls, add commit/push regressions and document conservative refusals and remaining interpreter limits.
+
 ## 1.2.5 (2026-11-05)
 
 - Remove the Bash hook's narrow `if` prefix filter so `env`-wrapped Git reaches the guard parser. Keep heredoc payloads opaque without hiding real Git writes outside them, and distinguish arithmetic/parameter/index shifts from heredoc redirects. Add manifest and parser regressions. Every Bash call now starts the guard, including unrelated commands.
