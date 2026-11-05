@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Resolve push source refs and configured mappings instead of scanning upstream..HEAD. Inspect complete selected commit histories, including merge diffs, without receiver exclusions; this can also flag already-published historical secrets. Refuse unresolved/unsupported selection and incomplete/failed history reads, disable lazy fetching/replacement objects/external converters, and share the inspection budget across a Bash call. Add regressions for named branches, alternate receivers, safe/multiple/configured sources, deletion-only pushes and inspection boundaries.
+
 ## 1.2.2 (2026-11-05)
 
 - Refuse Git commit/push when a `-C` path requires shell expansion or the repository depends on an untracked shell directory change. Keep substitutions opaque and never execute them; require a literal absolute `git -C` target to inspect writes after `cd`, and retain uncertainty from an unresolved earlier `git add`. Add regressions for variable/substitution paths, directory changes, shell prefixes, literal dollar paths, safe message expansion and read-only controls.

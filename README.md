@@ -112,11 +112,15 @@ Fix:
   2. Keep browser-public prefixes (NEXT_PUBLIC_, VITE_, EXPO_PUBLIC_...) for values that are safe to publish.
 ```
 
-The agent reads that message and fixes it itself. The guard blocks only high-confidence key formats, allows secrets in `.env`, and checks every unpushed commit (not just the last one). Silence a false positive with a `vibecheck-ignore` comment on the line, or turn the guard off with `VIBECHECK_GUARD=off`.
+The agent reads that message and fixes it itself. The guard blocks only high-confidence key formats, allows secrets in `.env`, and checks source commit histories before a push (not just the last commit). Silence a false positive with a `vibecheck-ignore` comment on the line, or turn the guard off with `VIBECHECK_GUARD=off`.
 
 For literal Git commands, commit and push checks follow the repo selected by `git -C`, including quoted paths and repeated `-C` options. Each command in a chain keeps its own repo target. The guard does not evaluate shell variables or command substitutions: it refuses commit/push when a `-C` path needs expansion. After `cd`, `pushd` or `popd` in the same Bash call, use a literal absolute `git -C '/path/to/repo' …`; otherwise the write is refused because its repo cannot be inspected. An unresolved `git add` also prevents a later commit in the same call from hiding newly staged files. These refusals mean the target is uncertain, not that a secret was found. Message-only expansion, literal dollar signs in quoted/escaped paths, and read-only Git commands remain allowed.
 
 This is still a bounded command parser, not a complete shell security boundary. Arbitrary wrappers, dynamic executables/subcommands, shell functions, and other repository overrides such as `--git-dir` or Git environment/config overrides are not interpreted. Use direct Git commands with literal absolute paths for guard coverage.
+
+Push checks resolve literal local commit sources from refspecs such as `git push origin feature:main`, including multiple sources and `--all`. When refspecs are omitted, the selected remote's `remote.<name>.push` mappings take precedence over supported current-branch defaults; branch `pushRemote` and `remote.pushDefault` choose the default remote. Deletion-only pushes transfer no source history. The guard scans complete source histories, including merge diffs, without excluding commits based on upstream or remote-tracking refs. This conservative policy can block a historical secret even when it was already published to a remote.
+
+Dynamic or unresolved sources, annotated tags/non-commit objects, wildcard/matching/mirror/tag selection, implicit recursive submodule pushes, and other unsupported push forms are refused with an inspection message. Shallow/incomplete histories and failed or oversized reads are also refused. Git discovery and push inspection share an eight-second budget per Bash call, below the hook timeout. Inspection never queries receivers, lazy-fetches objects, applies replacement objects, or runs external diff/textconv/signature programs. Use explicit literal local commit refs for predictable coverage. Unexpected internal errors still follow the fail-open behavior described below.
 
 ## Use it in CI
 
