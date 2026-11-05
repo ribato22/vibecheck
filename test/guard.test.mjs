@@ -720,6 +720,84 @@ test('heredocs do not hide real Git writes before or after their payloads', () =
   } finally { removeProject(dir); }
 });
 
+test('arithmetic and array indexes inspect nested commit and push substitutions without execution', () => {
+  const { dir, cwd, target, remote, main } = pushFixture();
+  try {
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    git(target, 'add', '.env');
+    const staged = git(target, 'diff', '--cached', '--binary');
+    const marker = join(dir, 'must-not-exist');
+    for (const verb of ['commit -qm fixture', 'push -q origin secret-history']) {
+      const body = `touch ${quoted(marker)}; git -C ${quoted(target)} ${verb}`;
+      const arithmetic = `(( fixture_n = $(${body})1 ))`;
+      const index = `fixture_values[$(${body})0]=safe`;
+      for (const command of [
+        arithmetic,
+        index,
+        `/bin/bash -c ${quoted(arithmetic)}`,
+        `/bin/bash -c ${quoted(index)}`,
+        `fixture_values[$(${body})0]+=safe`,
+        `(( fixture_n = \`${body}\`1 ))`,
+        `for ((fixture_n=$(${body})1;fixture_n<2;fixture_n++)); do :; done`,
+      ]) {
+        const result = guard(bash(command, cwd));
+        assert.equal(result.code, 2, command);
+        assert.match(result.stderr, /\.env would be committed|OpenAI API key/);
+        assert.ok(!result.stderr.includes(keys.openai));
+      }
+    }
+    assert.equal(existsSync(marker), false, 'inspection must not execute substitution bodies');
+    assert.equal(git(target, 'rev-parse', 'HEAD').trim(), main);
+    assert.equal(git(remote, 'rev-parse', 'main').trim(), main);
+    assert.equal(git(target, 'diff', '--cached', '--binary'), staged);
+  } finally { removeProject(dir); }
+});
+
+test('arithmetic and index substitutions retain nested add scope for later commits', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, '.env'), `OPENAI_API_KEY=${keys.openai}\n`);
+    const commit = `git -C ${quoted(target)} commit -m fixture`;
+    for (const add of [`git -C ${quoted(target)} add .`, 'git -C "$UNRESOLVED_REPO" add .']) {
+      for (const setup of [`(( fixture_n=$(${add})1 ))`, `fixture_values[$(${add})0]=safe`]) {
+        const result = guard(bash(`${setup}; ${commit}`, cwd));
+        assert.equal(result.code, 2, setup);
+        assert.match(result.stderr, /\.env would be committed|Cannot inspect git commit/);
+        assert.ok(!result.stderr.includes(keys.openai));
+      }
+    }
+    assert.equal(git(target, 'diff', '--cached', '--name-only'), '', 'inspection must not stage files');
+  } finally { removeProject(dir); }
+});
+
+test('arithmetic and index parsing preserves safe syntax, quote boundaries and nesting limits', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    writeFileSync(join(target, 'safe.txt'), 'safe\n');
+    git(target, 'add', 'safe.txt');
+    const marker = join(dir, 'must-not-exist');
+    const commit = `git -C ${quoted(target)} commit -m safe`;
+    const harmless = `touch ${quoted(marker)}; printf 1`;
+    for (const command of [
+      `(( fixture_n=1<<2 )); ${commit}`,
+      `fixture_values[1 << 2]=safe; ${commit}`,
+      `(( fixture_n=$(${harmless}) )); ${commit}`,
+      `fixture_values[$(${harmless})]=safe; ${commit}`,
+      `printf '%s' ${quoted('((fixture_n=$(git -C "$UNRESOLVED_REPO" push origin main)1))')}`,
+      `printf '%s' ${quoted('fixture_values[$(git -C "$UNRESOLVED_REPO" push origin main)0]=safe')}`,
+    ]) assert.equal(guard(bash(command, cwd)).code, 0, command);
+    let nested = 'printf 0';
+    for (let i = 0; i < 10; i++) nested = `printf "$(${nested})"`;
+    for (const command of [`((fixture_n=$(${nested})1))`, `fixture_values[$(${nested})0]=safe`]) {
+      const result = guard(bash(command, cwd));
+      assert.equal(result.code, 2);
+      assert.match(result.stderr, /Cannot inspect shell command.*budget/);
+    }
+    assert.equal(existsSync(marker), false);
+    assert.match(git(target, 'diff', '--cached', '--name-only'), /^safe.txt$/m);
+  } finally { removeProject(dir); }
+});
+
 test('arithmetic and word expansions containing shifts cannot hide a later Git write', () => {
   const { dir, cwd, target } = gitFixture();
   try {

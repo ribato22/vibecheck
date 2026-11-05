@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Inspect explicit command substitutions inside arithmetic expressions and array-assignment indexes before keeping the surrounding syntax opaque to heredoc parsing. Preserve nested Git add scope, safe shifts/quoted text and parsing limits; add commit/push regressions without evaluating shell bodies.
+
 ## 1.2.6 (2026-11-05)
 
 - Close nine observed shell-indirection gaps in the Bash Git guard: `env -u`, literal shell `-c` bodies, function definitions, command substitutions, expanding heredocs, inline conditions, dynamic executables, persistent repo/index assignments and Git aliases. Inspect literal nested bodies without executing them; refuse unresolved execution and bounded/incomplete parsing. Preserve quoted-heredoc and safe literal controls, add commit/push regressions and document conservative refusals and remaining interpreter limits.

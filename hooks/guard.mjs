@@ -171,10 +171,11 @@ function shellCommands(command, deadline, depth = 0) {
     if (!quote && ch === '(' && command[i + 1] === ')' && /^[A-Za-z_]\w*$/.test(started && !words.length ? word : !started && words.length === 1 ? words[0] : '')) {
       return [...commands, shellProblem('shell function definitions are not supported')];
     }
-    // Arithmetic and assignment indexes can contain shifts without starting a heredoc.
+    // Keep shifts opaque to heredoc parsing, but inspect executable substitutions inside them.
     if (!quote && heredoc === null && ch === '(' && command[i + 1] === '(') {
       const end = shellExpansionEnd(command, i, 1);
       if (end !== -1) {
+        commands.push(...substitutionCommands(command.slice(i, end + 1), deadline, depth));
         finishWord(); word = command.slice(i, end + 1); started = true; i = end;
         continue;
       }
@@ -182,6 +183,7 @@ function shellCommands(command, deadline, depth = 0) {
     if (!quote && heredoc === null && ch === '[' && /^[A-Za-z_]\w*$/.test(word) && words.every((w) => /^[A-Za-z_]\w*=/.test(w))) {
       const end = shellExpansionEnd(command, i, 1, '[]');
       if (end !== -1 && /^\+?=/.test(command.slice(end + 1))) {
+        commands.push(...substitutionCommands(command.slice(i + 1, end), deadline, depth));
         word += command.slice(i, end + 1); i = end;
         continue;
       }
