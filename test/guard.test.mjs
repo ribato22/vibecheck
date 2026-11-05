@@ -1,7 +1,7 @@
 // vibecheck-ignore-file
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { keys, makeProject, removeProject, git, guard } from './helpers.mjs';
 
@@ -19,6 +19,25 @@ function gitFixture() {
     git(repo, 'commit', '-qm', 'baseline');
   }
   return { dir, cwd, target };
+}
+
+function pushFixture() {
+  const fixture = gitFixture();
+  const { dir, target } = fixture;
+  const remote = join(dir, 'origin.git');
+  git(dir, 'init', '--bare', '-q', remote);
+  git(target, 'remote', 'add', 'origin', remote);
+  git(target, '-c', 'protocol.file.allow=always', 'push', '-qu', 'origin', 'main');
+  const main = git(target, 'rev-parse', 'HEAD').trim();
+  git(target, 'checkout', '-qb', 'secret-history');
+  writeFileSync(join(target, 'key.ts'), `const key = "${keys.openai}";\n`);
+  git(target, 'add', 'key.ts');
+  git(target, 'commit', '-qm', 'synthetic secret');
+  const secret = git(target, 'rev-parse', 'HEAD').trim();
+  git(target, 'rm', '-q', 'key.ts');
+  git(target, 'commit', '-qm', 'remove synthetic secret');
+  git(target, 'checkout', '-q', 'main');
+  return { ...fixture, remote, main, secret };
 }
 
 test('blocks hardcoding a key into source code', () => {
@@ -391,5 +410,231 @@ test('an absolute literal git -C restores an inspectable target after cd', () =>
     assert.match(result.stderr, /\.env would be committed/);
     assert.doesNotMatch(result.stderr, /Cannot inspect git/);
     assert.equal(guard(bash(`cd ${quoted(target)} && git -C "" commit -m fixture`, cwd)).code, 2);
+  } finally { removeProject(dir); }
+});
+
+test('push inspects a named source branch even when HEAD is clean and synced', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const remote = join(dir, 'origin.git');
+    git(dir, 'init', '--bare', '-q', remote);
+    git(target, 'remote', 'add', 'origin', remote);
+    git(target, '-c', 'protocol.file.allow=always', 'push', '-qu', 'origin', 'main');
+    const main = git(target, 'rev-parse', 'HEAD');
+    git(target, 'checkout', '-qb', 'secret-history');
+    writeFileSync(join(target, 'key.ts'), `const key = "${keys.openai}";\n`);
+    git(target, 'add', 'key.ts');
+    git(target, 'commit', '-qm', 'synthetic secret');
+    git(target, 'rm', '-q', 'key.ts');
+    git(target, 'commit', '-qm', 'remove synthetic secret');
+    git(target, 'checkout', '-q', 'main');
+    assert.equal(git(target, 'rev-list', '--count', '@{u}..HEAD').trim(), '0');
+    const result = guard(bash(`git -C ${quoted(target)} push origin secret-history:refs/heads/secret-history`, cwd));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /OpenAI API key/);
+    assert.ok(!result.stderr.includes(keys.openai));
+    assert.equal(git(target, 'rev-parse', 'HEAD'), main);
+    assert.equal(git(remote, 'for-each-ref', '--format=%(refname)', 'refs/heads/secret-history'), '');
+  } finally { removeProject(dir); }
+});
+
+test('push to another remote checks history already present in the upstream', () => {
+  const { dir, cwd, target } = gitFixture();
+  try {
+    const origin = join(dir, 'origin.git');
+    const archive = join(dir, 'archive.git');
+    for (const [name, remote] of [['origin', origin], ['archive', archive]]) {
+      git(dir, 'init', '--bare', '-q', remote);
+      git(target, 'remote', 'add', name, remote);
+      git(target, '-c', 'protocol.file.allow=always', 'push', '-q', name, 'main');
+    }
+    git(target, 'branch', '--set-upstream-to=origin/main', 'main');
+    const archiveBefore = git(archive, 'rev-parse', 'main');
+    writeFileSync(join(target, 'key.ts'), `const key = "${keys.openai}";\n`);
+    git(target, 'add', 'key.ts');
+    git(target, 'commit', '-qm', 'synthetic secret');
+    git(target, 'rm', '-q', 'key.ts');
+    git(target, 'commit', '-qm', 'remove synthetic secret');
+    git(target, '-c', 'protocol.file.allow=always', 'push', '-q', 'origin', 'main');
+    assert.equal(git(target, 'rev-list', '--count', '@{u}..HEAD').trim(), '0');
+    const result = guard(bash(`git -C ${quoted(target)} push archive main`, cwd));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /OpenAI API key/);
+    assert.equal(git(archive, 'rev-parse', 'main'), archiveBefore);
+  } finally { removeProject(dir); }
+});
+
+test('push selection separates safe refs, option values, deletes and multiple sources', () => {
+  const { dir, cwd, target } = pushFixture();
+  try {
+    for (const args of ['--push-option secret-history origin main', 'origin HEAD:refs/heads/safe', '--delete origin secret-history', 'origin :refs/heads/secret-history']) {
+      assert.equal(guard(bash(`git -C ${quoted(target)} push ${args}`, cwd)).code, 0, args);
+    }
+    for (const args of ['origin main secret-history:refs/heads/feature', '--force-with-lease origin +secret-history:refs/heads/feature', '--all origin']) {
+      const result = guard(bash(`git -C ${quoted(target)} push ${args}`, cwd));
+      assert.equal(result.code, 2, args);
+      assert.match(result.stderr, /OpenAI API key/);
+    }
+  } finally { removeProject(dir); }
+});
+
+test('push defaults honor remote mappings and push-remote precedence', () => {
+  const { dir, cwd, target } = pushFixture();
+  try {
+    git(target, 'config', 'remote.origin.push', 'secret-history:refs/heads/feature');
+    for (const command of ['git push origin', 'git push']) {
+      const result = guard(bash(command, target));
+      assert.equal(result.code, 2, command);
+      assert.match(result.stderr, /OpenAI API key/);
+    }
+    git(target, 'remote', 'add', 'archive', join(dir, 'receiver-not-contacted.git'));
+    git(target, 'config', 'remote.archive.push', 'secret-history:refs/heads/feature');
+    git(target, 'config', 'remote.origin.push', 'main');
+    git(target, 'config', 'remote.pushDefault', 'archive');
+    assert.match(guard(bash('git push', target)).stderr, /OpenAI API key/);
+    assert.equal(guard(bash(`git -C ${quoted(target)} push origin`, cwd)).code, 0);
+    git(target, 'config', 'branch.main.pushRemote', 'origin');
+    assert.equal(guard(bash('git push', target)).code, 0);
+    assert.equal(existsSync(join(dir, 'receiver-not-contacted.git')), false);
+  } finally { removeProject(dir); }
+});
+
+test('unresolved, dynamic, annotated-tag and unsupported push selections are refused', () => {
+  const { dir, cwd, target } = pushFixture();
+  try {
+    git(target, 'tag', '-a', 'annotated', '-m', 'safe annotation');
+    for (const args of ['origin missing-ref', 'origin "$SOURCE"', 'origin annotated', '--tags origin', '--mirror origin', '--follow-tags origin main', 'origin :', '--unknown origin main']) {
+      const result = guard(bash(`git -C ${quoted(target)} push ${args}`, cwd));
+      assert.equal(result.code, 2, args);
+      assert.match(result.stderr, /Cannot inspect git push/);
+    }
+    git(target, 'config', 'push.followTags', 'true');
+    assert.match(guard(bash('git push origin main', target)).stderr, /Cannot inspect git push/);
+    git(target, 'config', 'push.followTags', 'yes');
+    assert.match(guard(bash('git push origin main', target)).stderr, /Cannot inspect git push/);
+    assert.equal(guard(bash('git push --no-follow-tags origin main', target)).code, 0);
+    git(target, 'config', '--unset', 'push.followTags');
+    git(target, 'config', 'remote.origin.mirror', 'true');
+    assert.match(guard(bash('git push origin main', target)).stderr, /Cannot inspect git push/);
+    git(target, 'config', 'remote.origin.mirror', '1');
+    assert.match(guard(bash('git push origin main', target)).stderr, /Cannot inspect git push/);
+    git(target, 'config', '--unset', 'remote.origin.mirror');
+    git(target, 'config', 'push.recurseSubmodules', 'on-demand');
+    assert.match(guard(bash('git push origin main', target)).stderr, /Cannot inspect git push/);
+    git(target, 'config', '--unset', 'push.recurseSubmodules');
+    git(target, 'config', 'push.default', 'matching');
+    assert.match(guard(bash('git push origin', target)).stderr, /Cannot inspect git push/);
+    git(target, 'tag', 'main');
+    assert.match(guard(bash('git push origin main', target)).stderr, /Cannot inspect git push/);
+  } finally { removeProject(dir); }
+});
+
+test('shallow and unreadable push histories are refused rather than treated as clean', () => {
+  const { dir, target, main, secret } = pushFixture();
+  try {
+    writeFileSync(join(target, '.git', 'shallow'), `${main}\n`);
+    assert.match(guard(bash('git push origin main', target)).stderr, /Cannot inspect git push/);
+    unlinkSync(join(target, '.git', 'shallow'));
+    const object = join(target, '.git', 'objects', secret.slice(0, 2), secret.slice(2));
+    assert.equal(existsSync(object), true);
+    unlinkSync(object);
+    const result = guard(bash('git push origin secret-history', target));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /source history inspection failed/);
+  } finally { removeProject(dir); }
+});
+
+test('push history includes secrets introduced only by a merge commit', () => {
+  const { dir, target } = gitFixture();
+  try {
+    git(target, 'checkout', '-qb', 'feature');
+    writeFileSync(join(target, 'feature.txt'), 'safe feature\n');
+    git(target, 'add', 'feature.txt');
+    git(target, 'commit', '-qm', 'safe feature');
+    git(target, 'checkout', '-q', 'main');
+    writeFileSync(join(target, 'main.txt'), 'safe main\n');
+    git(target, 'add', 'main.txt');
+    git(target, 'commit', '-qm', 'safe main');
+    git(target, 'merge', '--no-ff', '--no-commit', 'feature');
+    writeFileSync(join(target, 'key.ts'), `const key = "${keys.openai}";\n`);
+    git(target, 'add', 'key.ts');
+    git(target, 'commit', '-qm', 'merge introduces synthetic secret');
+    const result = guard(bash('git push origin main', target));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /OpenAI API key/);
+    git(target, 'config', 'log.diffMerges', 'off');
+    const configured = guard(bash('git push origin main', target));
+    assert.equal(configured.code, 2);
+    assert.match(configured.stderr, /OpenAI API key/);
+  } finally { removeProject(dir); }
+});
+
+test('push inspection never runs a configured textconv program', () => {
+  const { dir, target } = gitFixture();
+  try {
+    const marker = join(dir, 'converter-ran');
+    const converter = join(dir, 'converter.mjs');
+    writeFileSync(converter, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'ran'); process.stdout.write('clean');\n`);
+    git(target, 'config', 'diff.fixture.textconv', `"${process.execPath}" "${converter}"`);
+    writeFileSync(join(target, '.gitattributes'), 'key.ts diff=fixture\n');
+    writeFileSync(join(target, 'key.ts'), `const key = "${keys.openai}";\n`);
+    git(target, 'add', '.gitattributes', 'key.ts');
+    git(target, 'commit', '-qm', 'synthetic secret with textconv');
+    const result = guard(bash('git push origin main', target));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /OpenAI API key/);
+    assert.equal(existsSync(marker), false);
+  } finally { removeProject(dir); }
+});
+
+test('replacement objects cannot hide the history a push will send', () => {
+  const { dir, target, main, secret } = pushFixture();
+  try {
+    git(target, 'replace', secret, main);
+    const result = guard(bash('git push origin secret-history', target));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /OpenAI API key/);
+  } finally { removeProject(dir); }
+});
+
+test('multiple pushes share one inspection budget for the whole Bash call', () => {
+  const { dir, target } = gitFixture();
+  try {
+    const command = Array(1000).fill(`git -C ${quoted(target)} push origin main`).join('; ');
+    const started = Date.now();
+    const result = guard(bash(command, target));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /Cannot inspect git push/);
+    assert.ok(Date.now() - started < 15000, 'must refuse within one budget, not grant a budget per push');
+  } finally { removeProject(dir); }
+});
+
+test('root source commits are inspected even when log.showRoot is disabled', () => {
+  const dir = makeProject({ 'key.ts': `const key = "${keys.openai}";\n` });
+  try {
+    git(dir, 'init', '-q');
+    git(dir, 'add', 'key.ts');
+    git(dir, 'commit', '-qm', 'root synthetic secret');
+    git(dir, 'rm', '-q', 'key.ts');
+    git(dir, 'commit', '-qm', 'remove synthetic secret');
+    git(dir, 'config', 'log.showRoot', 'false');
+    const result = guard(bash('git push unused HEAD:main', dir));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /OpenAI API key/);
+  } finally { removeProject(dir); }
+});
+
+test('push history detects env files created by rename-only commits', () => {
+  const dir = makeProject({ 'settings.txt': 'SECRET=synthetic\n' });
+  try {
+    git(dir, 'init', '-q');
+    git(dir, 'add', 'settings.txt');
+    git(dir, 'commit', '-qm', 'safe initial filename');
+    git(dir, 'mv', 'settings.txt', '.env');
+    git(dir, 'commit', '-qm', 'rename to env');
+    git(dir, 'config', 'diff.renames', 'true');
+    const result = guard(bash('git push unused HEAD:main', dir));
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /\.env would be committed/);
   } finally { removeProject(dir); }
 });

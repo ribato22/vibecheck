@@ -50,9 +50,10 @@ function checkWrite(tool, input) {
   return problems;
 }
 
-function git(args, cwd) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  return r.status === 0 ? r.stdout : null;
+function git(args, cwd, options = {}) {
+  const { requireQuiet = false, ...spawnOptions } = options;
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...spawnOptions });
+  return r.status === 0 && (!requireQuiet || !r.stderr) ? r.stdout : null;
 }
 
 /** Secrets on the added lines of a unified diff / `git log -p` output. */
@@ -169,7 +170,7 @@ function shellCommands(command) {
   return commands;
 }
 
-function gitCommands(command, cwd) {
+function gitCommands(command, cwd, deadline) {
   const commands = [];
   let changedCwd = false, unknownAdd = false;
   for (const { words, expansions } of shellCommands(command)) {
@@ -211,9 +212,18 @@ function gitCommands(command, cwd) {
       continue;
     }
     // Let Git apply repeated -C options, including empty paths and symlink/.. traversal.
-    let root = git([...dirs, 'rev-parse', '--show-toplevel'], cwd);
-    if (!root && verb === 'push') root = git([...dirs, 'rev-parse', '--absolute-git-dir'], cwd);
-    if (root) commands.push({ verb, cwd: root.replace(/\r?\n$/, ''), args: words.slice(i + 1) });
+    if (Date.now() >= deadline) {
+      commands.push({ problem: `Cannot inspect git ${verb}: the shared inspection budget is exhausted.` });
+      break;
+    }
+    const inspect = (argv) => Date.now() >= deadline ? null : git(argv, cwd, { timeout: Math.max(1, deadline - Date.now()) });
+    let root = inspect([...dirs, 'rev-parse', '--show-toplevel']);
+    if (!root && verb === 'push') root = inspect([...dirs, 'rev-parse', '--absolute-git-dir']);
+    if (!root && (verb === 'push' || Date.now() >= deadline)) {
+      commands.push({ problem: `Cannot inspect git ${verb}: repository discovery failed or exceeded the shared inspection budget.` });
+      break;
+    }
+    if (root) commands.push({ verb, cwd: root.replace(/\r?\n$/, ''), args: words.slice(i + 1), dynamicArgs: words.slice(i + 1).some((_, j) => expansions.has(i + 1 + j)) });
   }
   return commands;
 }
@@ -237,12 +247,87 @@ function commitsAll(args) {
   return false;
 }
 
+function pushProblems(args, cwd, dynamicArgs, deadline) {
+  const deny = (reason) => [`Cannot inspect git push: ${reason}. Use explicit literal local commit source refs and supported push options.`];
+  if (dynamicArgs) return deny('push arguments require shell expansion');
+  const read = (argv) => Date.now() >= deadline ? null : git(['--no-lazy-fetch', '--no-replace-objects', ...argv], cwd, { timeout: Math.max(1, deadline - Date.now()), requireQuiet: true });
+  const config = (key) => read(['config', '--get', key])?.trim();
+  const enabled = (key) => read(['config', '--bool', '--get', key])?.trim() === 'true';
+  const positionals = [];
+  let options = true, all = false, deleting = false, followTags;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (options && arg === '--') { options = false; continue; }
+    if (options && arg.startsWith('-')) {
+      if (arg === '--all' || arg === '--branches') all = true;
+      else if (arg === '--delete' || arg === '-d') deleting = true;
+      else if (arg === '--follow-tags') followTags = true;
+      else if (arg === '--no-follow-tags') followTags = false;
+      else if (['-o', '--push-option', '--receive-pack', '--exec'].includes(arg)) {
+        if (++i === args.length) return deny('a push option has no value');
+      } else if (/^--(?:push-option|receive-pack|exec|force-with-lease|signed)=/.test(arg) || /^-[qvfun]+$/.test(arg) || [
+        '--set-upstream', '--force', '--force-with-lease', '--force-if-includes', '--no-force-if-includes',
+        '--atomic', '--no-atomic', '--porcelain', '--verbose', '--quiet', '--progress', '--no-progress',
+        '--dry-run', '--no-verify', '--verify', '--thin', '--no-thin', '--signed', '--no-signed', '--prune',
+      ].includes(arg)) continue;
+      else return deny('this push option is not supported for source inspection');
+    } else positionals.push(arg);
+  }
+  if (deleting) return [];
+  let [remote, ...specs] = positionals;
+  const branch = read(['symbolic-ref', '--quiet', '--short', 'HEAD'])?.trim();
+  remote ||= (branch && config(`branch.${branch}.pushRemote`)) || config('remote.pushDefault') || (branch && config(`branch.${branch}.remote`)) || 'origin';
+  if (read(['config', '--get-all', `remotes.${remote}`]) !== null) return deny('remote group selection is not supported');
+  if (enabled(`remote.${remote}.mirror`) || (followTags ?? enabled('push.followTags'))) return deny('implicit mirror or annotated-tag sources are not supported');
+  const recursion = config('push.recurseSubmodules')?.toLowerCase();
+  if (recursion && !['no', 'false', 'off', '0', 'check'].includes(recursion)) return deny('implicit submodule pushes are not supported');
+  if (read(['rev-parse', '--is-shallow-repository'])?.trim() !== 'false') return deny('complete local history is unavailable');
+  if (all) {
+    if (specs.length) return deny('branch selection is ambiguous');
+    const refs = read(['for-each-ref', '--format=%(refname)', 'refs/heads/']);
+    if (refs === null) return deny('local branches could not be listed');
+    specs = refs.trim().split('\n').filter(Boolean);
+  } else if (!specs.length) {
+    if (!config(`remote.${remote}.url`)) return deny('default sources require a configured named remote');
+    const configured = read(['config', '--get-all', `remote.${remote}.push`]);
+    if (configured !== null) {
+      specs = configured.trim().split('\n').filter(Boolean);
+      if (!specs.length) return deny('configured source selection is empty');
+    }
+    else {
+      const mode = config('push.default') || 'simple';
+      if (mode === 'nothing') return [];
+      if (!['simple', 'current', 'upstream', 'tracking'].includes(mode)) return deny('the default push source selection is not supported');
+      specs = ['HEAD'];
+    }
+  }
+  const tips = new Set();
+  for (const spec of specs) {
+    const parts = spec.replace(/^\+/, '').split(':');
+    if (parts.length > 2 || /[*?\[\]\s]/.test(spec) || spec === ':' || spec === '+:') return deny('a refspec is not a literal commit source');
+    const source = parts[0];
+    if (!source) {
+      if (parts.length === 2 && parts[1]) continue; // A deletion transfers no source history.
+      return deny('a source ref is missing');
+    }
+    const oid = read(['rev-parse', '--verify', '--end-of-options', source])?.trim();
+    if (!oid || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(oid) || read(['cat-file', '-t', oid])?.trim() !== 'commit') return deny('a source is unresolved, ambiguous, or not a commit');
+    tips.add(oid);
+  }
+  if (!tips.size) return [];
+  // No receiver exclusions: remote tracking refs may be stale or belong to another receiver.
+  const patch = read(['log', '-p', '--root', '--diff-merges=separate', '--no-renames', '--format=', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', '--no-show-signature', '--no-notes', ...tips, '--']);
+  return patch === null ? deny('source history inspection failed or exceeded its limits') : patchProblems(patch);
+}
+
 function checkGit(command, cwd) {
   const problems = [];
+  const deadline = Date.now() + 8000;
   const diffArgs = ['-U0', '--no-color', '--no-ext-diff'];
   const addsFiles = new Set();
-  for (const cmd of gitCommands(command, cwd)) {
+  for (const cmd of gitCommands(command, cwd, deadline)) {
     if (cmd.problem) { problems.push(cmd.problem); continue; }
+    if (Date.now() >= deadline) { problems.push(`Cannot inspect git ${cmd.verb}: the shared inspection budget is exhausted.`); break; }
     const target = cmd.cwd;
     if (cmd.verb === 'add') addsFiles.add(target);
     if (cmd.verb === 'commit') {
@@ -253,9 +338,7 @@ function checkGit(command, cwd) {
       if (addsFiles.has(target)) problems.push(...untrackedProblems(target));
     }
     if (cmd.verb === 'push') {
-      const range = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], target) !== null
-        ? ['@{u}..HEAD'] : ['HEAD', '--not', '--remotes'];
-      problems.push(...patchProblems(git(['log', '-p', '--format=', ...diffArgs, ...range], target) || ''));
+      problems.push(...pushProblems(cmd.args, target, cmd.dynamicArgs, deadline));
     }
   }
   return problems;
@@ -287,7 +370,8 @@ function main() {
   if (!problems.length) return;
 
   const uncertainRepo = problems.some((p) => p.startsWith('Cannot inspect git '));
-  if (uncertainRepo) advice = ['Use git -C with a literal absolute repository path and run directory changes separately.'];
+  if (problems.some((p) => p.startsWith('Cannot inspect git push:'))) advice = ['Use a literal repository path and explicit local commit source refs; verify complete local history and simplify push options.'];
+  else if (uncertainRepo) advice = ['Use git -C with a literal absolute repository path and run directory changes separately.'];
   const unique = [...new Set(problems)].slice(0, 15);
   process.stderr.write([
     uncertainRepo ? 'vibecheck guard blocked this: the Git repository cannot be inspected safely.'
