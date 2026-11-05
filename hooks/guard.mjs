@@ -17,7 +17,7 @@ const ENV_EXAMPLE = /(?:example|sample|template|dist|defaults?)$/i;
 const SECRET_HOME = /^(?:\.dev\.vars|secrets\.toml)$|\.(?:pem|key|p12|pfx)$/; // files whose whole job is to hold a secret
 const CODE_EXT = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.vue', '.svelte', '.astro', '.json']);
 const MAX_UNTRACKED = 2000;
-const GIT_CONTEXT_ASSIGNMENT = /^(?:GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|CONFIG(?:_\w+)?)|HOME|XDG_CONFIG_HOME)=/;
+const GIT_CONTEXT_WORD = /^(?:GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|CONFIG(?:_\w+)?)|HOME|XDG_CONFIG_HOME)(?:=|\[|$)/;
 
 const isRealEnv = (name) => ENV_FILE.test(name) && !ENV_EXAMPLE.test(name);
 
@@ -154,13 +154,14 @@ function shellCommands(command, deadline, depth = 0) {
   if (depth > 8 || command.length > 131072 || Date.now() >= deadline) return [shellProblem('the parsing budget is exhausted')];
   const commands = [];
   let words = [], expansions = new Set(), word = '', quote = '', started = false, expands = false;
-  let heredoc = null, heredocs = [], quotedWord = false, lineStart = 0;
+  let heredoc = null, heredocs = [], quotedWord = false, lineStart = 0, redirectTarget = false, redirected = false;
   const finishWord = () => {
     if (started) {
       if (heredoc !== null) {
         heredocs.push({ delimiter: word, stripTabs: heredoc, quoted: quotedWord });
         heredoc = null;
-      } else {
+      } else if (redirectTarget) redirectTarget = false;
+      else {
         if (expands) expansions.add(words.length);
         words.push(word);
       }
@@ -189,6 +190,13 @@ function shellCommands(command, deadline, depth = 0) {
         continue;
       }
     }
+    if (!quote && heredoc === null && /[<>]/.test(ch) && command[i + 1] === '(') {
+      const end = shellExpansionEnd(command, i + 1, 1);
+      if (end === -1) return [...commands, shellProblem('a process substitution is incomplete')];
+      commands.push(...shellCommands(command.slice(i + 2, end), deadline, depth + 1));
+      word += command.slice(i, end + 1); expands = true; started = true; i = end;
+      continue;
+    }
     if (ch === '\\' && quote !== "'") {
       const next = command[i + 1];
       if (next === undefined) return [...commands, shellProblem('a trailing escape is incomplete')];
@@ -213,16 +221,24 @@ function shellCommands(command, deadline, depth = 0) {
       else word += ch;
     } else if (ch === '"' || ch === "'") {
       quote = ch; started = true; quotedWord = true;
-    } else if (ch === '<' && command[i + 1] === '<' && command[i - 1] !== '<' && command[i + 2] !== '<') {
-      finishWord(); heredoc = command[i + 2] === '-'; i += heredoc ? 2 : 1;
+    } else if (heredoc === null && (/[<>]/.test(ch) || (ch === '&' && command[i + 1] === '>'))) {
+      if (redirectTarget && !started) return [...commands, shellProblem('a redirection target is missing')];
+      if (!redirectTarget && !quotedWord && /^\{[A-Za-z_]\w*\}$/.test(word)) return [...commands, shellProblem('descriptor-variable redirections are unsupported')];
+      if (!redirectTarget && !quotedWord && /^\d+$/.test(word)) { word = ''; started = false; }
+      finishWord(); redirected = true;
+      const operator = /^(?:<<<|<<-|<<|&>>|&>|>>|<>|>\||<&|>&|<|>)/.exec(command.slice(i))[0];
+      if (operator === '<<' || operator === '<<-') heredoc = operator === '<<-';
+      else redirectTarget = true;
+      i += operator.length - 1;
     } else if (ch === '#' && !started) {
       const newline = command.indexOf('\n', i);
       if (newline === -1) break;
       i = newline - 1;
     } else if (/[;&|\n()]/.test(ch)) {
       finishWord();
-      if (words.length) commands.push({ words, expansions, depth });
-      words = []; expansions = new Set();
+      if (redirectTarget || heredoc !== null) return [...commands, shellProblem('a redirection target is missing')];
+      if (words.length) commands.push({ words, expansions, depth, redirected });
+      words = []; expansions = new Set(); redirected = false;
       if (ch === '\n' && heredocs.length) {
         let cursor = i + 1;
         const nested = [];
@@ -247,7 +263,8 @@ function shellCommands(command, deadline, depth = 0) {
   }
   if (quote || heredoc !== null || heredocs.length) return [...commands, shellProblem('a quote or heredoc is incomplete')];
   finishWord();
-  if (words.length) commands.push({ words, expansions, depth });
+  if (redirectTarget) return [...commands, shellProblem('a redirection target is missing')];
+  if (words.length) commands.push({ words, expansions, depth, redirected });
   return commands;
 }
 
@@ -260,7 +277,7 @@ function gitCommands(command, cwd, deadline) {
     const parsed = parsedCommands[at];
     if (parsed.problem) { commands.push(parsed); continue; }
     const { words, expansions } = parsed;
-    const hasRedirect = words.some((word) => /[<>]/.test(word));
+    const hasRedirect = parsed.redirected;
     let first = 0, envOverride = false;
     while (first < words.length) {
       if (/^[A-Za-z_]\w*=/.test(words[first])) { first++; continue; }
@@ -294,7 +311,15 @@ function gitCommands(command, cwd, deadline) {
       if (words[first] === '--') first++;
     }
     if (first === words.length || ['export', 'declare', 'typeset', 'readonly'].includes(words[first])) {
-      persistentRepoOverride ||= words.some((word) => GIT_CONTEXT_ASSIGNMENT.test(word));
+      persistentRepoOverride ||= words.some((word) => GIT_CONTEXT_WORD.test(word));
+    }
+    if (words[first] === 'printf' && /^-v/.test(words[first + 1] || '')) {
+      const destinationAt = first + (words[first + 1] === '-v' ? 2 : 1);
+      const destination = words[first + 1] === '-v' ? words[destinationAt] : words[destinationAt].slice(2);
+      persistentRepoOverride ||= !destination || expansions.has(destinationAt) || GIT_CONTEXT_WORD.test(destination);
+    }
+    if (words[first] === 'read') {
+      persistentRepoOverride ||= words.slice(first + 1).some((word, i) => expansions.has(first + 1 + i) || GIT_CONTEXT_WORD.test(word));
     }
     if (['cd', 'pushd', 'popd'].includes(words[first])) changedCwd = true;
     if (expansions.has(first)) {
@@ -302,11 +327,11 @@ function gitCommands(command, cwd, deadline) {
       continue;
     }
     if (words[first] === 'function') { commands.push(shellProblem('shell function definitions are not supported')); continue; }
-    if (words[first] === '.' || /^(?:.*[\\/])?(?:eval|xargs|source)(?:\.exe)?$/.test(words[first] || '')) {
-      commands.push(shellProblem('eval, xargs and sourced scripts are not supported'));
+    if (words[first] === '.' || /^(?:.*[\\/])?(?:eval|xargs|source|trap|hash)(?:\.exe)?$/.test(words[first] || '')) {
+      commands.push(shellProblem('eval, xargs, sourced scripts, trap and hash are not supported'));
       continue;
     }
-    const inlineRepoOverride = envOverride || words.slice(0, first).some((word) => GIT_CONTEXT_ASSIGNMENT.test(word));
+    const inlineRepoOverride = envOverride || words.slice(0, first).some((word) => GIT_CONTEXT_WORD.test(word));
     if (/^(?:.*[\\/])?(?:sh|bash|dash|zsh|ksh)(?:\.exe)?$/.test(words[first] || '')) {
       persistentRepoOverride ||= inlineRepoOverride;
       let bodyAt = first + 1;
@@ -353,6 +378,12 @@ function gitCommands(command, cwd, deadline) {
       commands.push({ problem: 'Cannot inspect git command: the subcommand requires expansion. Use a literal Git subcommand.' });
       continue;
     }
+    if (verb?.startsWith('-')) {
+      if (!['--version', '-v', '--help', '-h', '--html-path', '--man-path', '--info-path', '--exec-path'].includes(verb)) {
+        commands.push(shellProblem('this global Git option is unsupported'));
+      }
+      continue;
+    }
     if (!['add', 'commit', 'push'].includes(verb)) {
       if (verb === 'config' && words.slice(i + 1).some((arg) => /^alias\./i.test(arg))) aliasSettingsChanged = true;
       if (verb && !verb.startsWith('-')) {
@@ -365,6 +396,7 @@ function gitCommands(command, cwd, deadline) {
       continue;
     }
     const firstDir = dirs.find((arg, j) => dirs[j - 1] === '-C' && arg !== '');
+    repoOverride ||= verb === 'push' && config.length > 0;
     if (repoOverride || dynamicRepo || (changedCwd && !isAbsolute(firstDir || '')) || (verb === 'commit' && unknownAdd)) {
       if (verb === 'add') unknownAdd = true;
       else if (repoOverride) commands.push({ problem: `Cannot inspect git ${verb}: repository, index or configuration overrides are not supported. Use direct git -C with a literal absolute repository path and no Git overrides.` });

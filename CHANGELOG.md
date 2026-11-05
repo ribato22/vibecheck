@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Close eight additional observed shell paths: keep Git writes visible across redirections, refuse unsupported global Git options and per-call push configuration, retain uncertainty from bare context declarations and printf/read mutations, and refuse trap/hash execution. Add regressions and safe/no-execution controls; document conservative refusals and remaining parser limits.
+
 ## 1.2.8 (2026-11-05)
 
 - Close six observed execution/configuration gaps in the Bash Git guard: inspect literal `exec`/`time` targets, refuse `eval`/`xargs`/sourced scripts without executing or reading them, and retain uncertainty from environment-selected Git configuration when checking writes or aliases. Add commit/push regressions, safe controls and no-execution checks; document conservative refusals and remaining parser limits.
