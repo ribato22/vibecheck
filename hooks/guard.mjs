@@ -17,6 +17,7 @@ const ENV_EXAMPLE = /(?:example|sample|template|dist|defaults?)$/i;
 const SECRET_HOME = /^(?:\.dev\.vars|secrets\.toml)$|\.(?:pem|key|p12|pfx)$/; // files whose whole job is to hold a secret
 const CODE_EXT = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.vue', '.svelte', '.astro', '.json']);
 const MAX_UNTRACKED = 2000;
+const GIT_CONTEXT_ASSIGNMENT = /^(?:GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|CONFIG(?:_\w+)?)|HOME|XDG_CONFIG_HOME)=/;
 
 const isRealEnv = (name) => ENV_FILE.test(name) && !ENV_EXAMPLE.test(name);
 
@@ -259,12 +260,25 @@ function gitCommands(command, cwd, deadline) {
     const parsed = parsedCommands[at];
     if (parsed.problem) { commands.push(parsed); continue; }
     const { words, expansions } = parsed;
+    const hasRedirect = words.some((word) => /[<>]/.test(word));
     let first = 0, envOverride = false;
     while (first < words.length) {
       if (/^[A-Za-z_]\w*=/.test(words[first])) { first++; continue; }
       if (['command', 'builtin', 'if', 'elif', 'then', 'else', 'while', 'until', 'do', '!', '{'].includes(words[first])) {
-        first++;
+        const prefix = words[first++];
+        if (prefix === 'command') while (/^-p+$/.test(words[first] || '')) first++;
         if (words[first] === '--') first++;
+        continue;
+      }
+      const wrapper = /^(?:.*[\\/])?(exec|time)(?:\.exe)?$/.exec(words[first]);
+      if (wrapper) {
+        first++;
+        if (wrapper[1] === 'time' && words[first] === '-p') first++;
+        if (words[first] === '--') first++;
+        // shortcut: redirects and other wrapper options need a full shell grammar; refuse them for now.
+        if (first === words.length || words[first].startsWith('-') || hasRedirect) {
+          commands.push(shellProblem(`this ${wrapper[1]} command, option or redirection is unsupported`));
+        }
         continue;
       }
       if (!/^(?:.*[\\/])?env(?:\.exe)?$/.test(words[first])) break;
@@ -280,7 +294,7 @@ function gitCommands(command, cwd, deadline) {
       if (words[first] === '--') first++;
     }
     if (first === words.length || ['export', 'declare', 'typeset', 'readonly'].includes(words[first])) {
-      persistentRepoOverride ||= words.some((word) => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)=/.test(word));
+      persistentRepoOverride ||= words.some((word) => GIT_CONTEXT_ASSIGNMENT.test(word));
     }
     if (['cd', 'pushd', 'popd'].includes(words[first])) changedCwd = true;
     if (expansions.has(first)) {
@@ -288,7 +302,11 @@ function gitCommands(command, cwd, deadline) {
       continue;
     }
     if (words[first] === 'function') { commands.push(shellProblem('shell function definitions are not supported')); continue; }
-    const inlineRepoOverride = envOverride || words.slice(0, first).some((word) => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)=/.test(word));
+    if (words[first] === '.' || /^(?:.*[\\/])?(?:eval|xargs|source)(?:\.exe)?$/.test(words[first] || '')) {
+      commands.push(shellProblem('eval, xargs and sourced scripts are not supported'));
+      continue;
+    }
+    const inlineRepoOverride = envOverride || words.slice(0, first).some((word) => GIT_CONTEXT_ASSIGNMENT.test(word));
     if (/^(?:.*[\\/])?(?:sh|bash|dash|zsh|ksh)(?:\.exe)?$/.test(words[first] || '')) {
       persistentRepoOverride ||= inlineRepoOverride;
       let bodyAt = first + 1;
@@ -349,7 +367,7 @@ function gitCommands(command, cwd, deadline) {
     const firstDir = dirs.find((arg, j) => dirs[j - 1] === '-C' && arg !== '');
     if (repoOverride || dynamicRepo || (changedCwd && !isAbsolute(firstDir || '')) || (verb === 'commit' && unknownAdd)) {
       if (verb === 'add') unknownAdd = true;
-      else if (repoOverride) commands.push({ problem: `Cannot inspect git ${verb}: repository or index overrides are not supported. Use direct git -C with a literal absolute repository path and no Git overrides.` });
+      else if (repoOverride) commands.push({ problem: `Cannot inspect git ${verb}: repository, index or configuration overrides are not supported. Use direct git -C with a literal absolute repository path and no Git overrides.` });
       else commands.push({ problem: `Cannot inspect git ${verb}: a repository path needs shell expansion, depends on a shell directory change, or follows an unresolved git add. Use git -C with a literal absolute repository path.` });
       continue;
     }

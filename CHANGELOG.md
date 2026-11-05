@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Close six observed execution/configuration gaps in the Bash Git guard: inspect literal `exec`/`time` targets, refuse `eval`/`xargs`/sourced scripts without executing or reading them, and retain uncertainty from environment-selected Git configuration when checking writes or aliases. Add commit/push regressions, safe controls and no-execution checks; document conservative refusals and remaining parser limits.
+
 ## 1.2.7 (2026-11-05)
 
 - Inspect explicit command substitutions inside arithmetic expressions and array-assignment indexes before keeping the surrounding syntax opaque to heredoc parsing. Preserve nested Git add scope, safe shifts/quoted text and parsing limits; add commit/push regressions without evaluating shell bodies.
