@@ -114,6 +114,8 @@ Fix:
 
 The agent reads that message and fixes it itself. The guard blocks only high-confidence key formats, allows secrets in `.env`, and checks every unpushed commit (not just the last one). Silence a false positive with a `vibecheck-ignore` comment on the line, or turn the guard off with `VIBECHECK_GUARD=off`.
 
+For literal Git commands, commit and push checks follow the repo selected by `git -C`, including quoted paths and repeated `-C` options. Each command in a chain keeps its own repo target. Shell variable expansion, command substitution, shell `cd`, and other repository overrides such as `--git-dir` are not interpreted; this guard is not a complete shell security boundary.
+
 ## Use it in CI
 
 The scanner is a single Node file with no dependencies:
