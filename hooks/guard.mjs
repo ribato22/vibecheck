@@ -17,7 +17,8 @@ const ENV_EXAMPLE = /(?:example|sample|template|dist|defaults?)$/i;
 const SECRET_HOME = /^(?:\.dev\.vars|secrets\.toml)$|\.(?:pem|key|p12|pfx)$/; // files whose whole job is to hold a secret
 const CODE_EXT = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.vue', '.svelte', '.astro', '.json']);
 const MAX_UNTRACKED = 2000;
-const GIT_CONTEXT_WORD = /^(?:GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|CONFIG(?:_\w+)?)|HOME|XDG_CONFIG_HOME)(?:=|\[|$)/;
+const GIT_CONTEXT_WORD = /^(?:GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|CONFIG(?:_\w+)?)|HOME|XDG_CONFIG_HOME)(?:\+?=|\[|$)/;
+const SHELL_STARTUP_WORD = /^(?:BASH_ENV|ENV|ZDOTDIR)(?:\+?=|\[|$)/;
 
 const isRealEnv = (name) => ENV_FILE.test(name) && !ENV_EXAMPLE.test(name);
 
@@ -162,7 +163,7 @@ function shellCommands(command, deadline, depth = 0) {
         heredoc = null;
       } else if (redirectTarget) redirectTarget = false;
       else {
-        if (expands) expansions.add(words.length);
+        if (expands && !['[', '[['].includes(word)) expansions.add(words.length);
         words.push(word);
       }
     }
@@ -182,7 +183,7 @@ function shellCommands(command, deadline, depth = 0) {
         continue;
       }
     }
-    if (!quote && heredoc === null && ch === '[' && /^[A-Za-z_]\w*$/.test(word) && words.every((w) => /^[A-Za-z_]\w*=/.test(w))) {
+    if (!quote && heredoc === null && ch === '[' && /^[A-Za-z_]\w*$/.test(word) && words.every((w) => /^[A-Za-z_]\w*\+?=/.test(w))) {
       const end = shellExpansionEnd(command, i, 1, '[]');
       if (end !== -1 && /^\+?=/.test(command.slice(end + 1))) {
         commands.push(...substitutionCommands(command.slice(i + 1, end), deadline, depth));
@@ -215,7 +216,7 @@ function shellCommands(command, deadline, depth = 0) {
       expands = true; started = true; i = end;
       continue;
     }
-    if (quote !== "'" && ch === '$') expands = true;
+    if ((quote !== "'" && ch === '$') || (!quote && '*?['.includes(ch))) expands = true;
     if (quote) {
       if (ch === quote) quote = '';
       else word += ch;
@@ -270,7 +271,7 @@ function shellCommands(command, deadline, depth = 0) {
 
 function gitCommands(command, cwd, deadline) {
   const commands = [];
-  let changedCwd = false, unknownAdd = false, persistentRepoOverride = false, aliasSettingsChanged = false, builtins = null, parsedSize = command.length;
+  let changedCwd = false, unknownAdd = false, persistentRepoOverride = false, persistentStartupOverride = false, builtins = null, parsedSize = command.length;
   const parsedCommands = shellCommands(command, deadline);
   for (let at = 0; at < parsedCommands.length; at++) {
     if (at >= 1024 || Date.now() >= deadline) { commands.push(shellProblem('the parsing budget is exhausted')); break; }
@@ -278,13 +279,23 @@ function gitCommands(command, cwd, deadline) {
     if (parsed.problem) { commands.push(parsed); continue; }
     const { words, expansions } = parsed;
     const hasRedirect = parsed.redirected;
-    let first = 0, envOverride = false;
+    let first = 0, envOverride = false, startupOverride = false;
     while (first < words.length) {
-      if (/^[A-Za-z_]\w*=/.test(words[first])) { first++; continue; }
-      if (['command', 'builtin', 'if', 'elif', 'then', 'else', 'while', 'until', 'do', '!', '{'].includes(words[first])) {
+      if (/^[A-Za-z_]\w*\+?=/.test(words[first])) {
+        startupOverride ||= SHELL_STARTUP_WORD.test(words[first]);
+        first++; continue;
+      }
+      if (['command', 'builtin', 'if', 'elif', 'then', 'else', 'while', 'until', 'do', '!', '{', 'noglob', 'nocorrect'].includes(words[first])) {
         const prefix = words[first++];
         if (prefix === 'command') while (/^-p+$/.test(words[first] || '')) first++;
         if (words[first] === '--') first++;
+        continue;
+      }
+      if (words[first] === 'repeat') {
+        if (expansions.has(first + 1) || !/^\d+$/.test(words[first + 1] || '') || words[first + 2] === undefined) {
+          commands.push(shellProblem('repeat requires a literal decimal count and command'));
+        }
+        first += 2;
         continue;
       }
       const wrapper = /^(?:.*[\\/])?(exec|time)(?:\.exe)?$/.exec(words[first]);
@@ -310,30 +321,40 @@ function gitCommands(command, cwd, deadline) {
       }
       if (words[first] === '--') first++;
     }
+    let mutations = [], unknownMutation = false;
     if (first === words.length || ['export', 'declare', 'typeset', 'readonly'].includes(words[first])) {
-      persistentRepoOverride ||= words.some((word) => GIT_CONTEXT_WORD.test(word));
+      mutations = words;
+      unknownMutation = words.some((word, i) => expansions.has(i) && !/^[A-Za-z_]\w*\+?=/.test(word));
     }
     if (words[first] === 'printf' && /^-v/.test(words[first + 1] || '')) {
       const destinationAt = first + (words[first + 1] === '-v' ? 2 : 1);
       const destination = words[first + 1] === '-v' ? words[destinationAt] : words[destinationAt].slice(2);
-      persistentRepoOverride ||= !destination || expansions.has(destinationAt) || GIT_CONTEXT_WORD.test(destination);
+      mutations = [destination || ''];
+      unknownMutation = !destination || expansions.has(destinationAt);
     }
     if (words[first] === 'read') {
-      persistentRepoOverride ||= words.slice(first + 1).some((word, i) => expansions.has(first + 1 + i) || GIT_CONTEXT_WORD.test(word));
+      mutations = words.slice(first + 1);
+      unknownMutation = mutations.some((_, i) => expansions.has(first + 1 + i));
     }
+    persistentRepoOverride ||= unknownMutation || mutations.some((word) => GIT_CONTEXT_WORD.test(word));
+    persistentStartupOverride ||= unknownMutation || mutations.some((word) => SHELL_STARTUP_WORD.test(word));
     if (['cd', 'pushd', 'popd'].includes(words[first])) changedCwd = true;
     if (expansions.has(first)) {
       commands.push({ problem: 'Cannot inspect shell command: the executable requires expansion. Use a literal executable and separate commands.' });
       continue;
     }
     if (words[first] === 'function') { commands.push(shellProblem('shell function definitions are not supported')); continue; }
-    if (words[first] === '.' || /^(?:.*[\\/])?(?:eval|xargs|source|trap|hash)(?:\.exe)?$/.test(words[first] || '')) {
-      commands.push(shellProblem('eval, xargs, sourced scripts, trap and hash are not supported'));
+    if (words[first] === '.' || /^(?:.*[\\/])?(?:eval|xargs|source|trap|hash|alias)(?:\.exe)?$/.test(words[first] || '')) {
+      commands.push(shellProblem('eval, xargs, sourced scripts, trap, hash and alias are not supported'));
       continue;
     }
     const inlineRepoOverride = envOverride || words.slice(0, first).some((word) => GIT_CONTEXT_WORD.test(word));
     if (/^(?:.*[\\/])?(?:sh|bash|dash|zsh|ksh)(?:\.exe)?$/.test(words[first] || '')) {
       persistentRepoOverride ||= inlineRepoOverride;
+      if (persistentStartupOverride || startupOverride) {
+        commands.push(shellProblem('environment-selected shell startup files cannot be inspected'));
+        continue;
+      }
       let bodyAt = first + 1;
       while (/^-[^-]/.test(words[bodyAt] || '') && !words[bodyAt].includes('c')) bodyAt++;
       if (!/^-[^-]*c/.test(words[bodyAt] || '') || expansions.has(bodyAt + 1) || words[bodyAt + 1] === undefined) {
@@ -385,11 +406,11 @@ function gitCommands(command, cwd, deadline) {
       continue;
     }
     if (!['add', 'commit', 'push'].includes(verb)) {
-      if (verb === 'config' && words.slice(i + 1).some((arg) => /^alias\./i.test(arg))) aliasSettingsChanged = true;
+      if (verb === 'config') persistentRepoOverride = true;
       if (verb && !verb.startsWith('-')) {
         builtins ??= git(['--list-cmds=builtins'], cwd, { timeout: Math.max(1, deadline - Date.now()) })?.trim().split(/\s+/);
         if (builtins?.includes(verb)) continue;
-        const alias = aliasSettingsChanged || changedCwd || dynamicRepo || repoOverride || Date.now() >= deadline ? null
+        const alias = changedCwd || dynamicRepo || repoOverride || Date.now() >= deadline ? null
           : git([...dirs, ...config, 'config', '--default', '', '--get', `alias.${verb}`], cwd, { timeout: Math.max(1, deadline - Date.now()), requireQuiet: true });
         if (alias === null || alias.trim()) commands.push(shellProblem('Git alias execution cannot be inspected'));
       }

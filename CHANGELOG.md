@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Close eight additional observed shell paths: refuse unresolved filename-pattern executables, refuse shell alias commands and environment-selected startup files, inspect literal zsh modifiers/repeat counts, and retain configuration uncertainty after Git config calls. Add regression/safe/no-execution controls and document conservative refusals.
+
 ## 1.2.9 (2026-11-05)
 
 - Close eight additional observed shell paths: keep Git writes visible across redirections, refuse unsupported global Git options and per-call push configuration, retain uncertainty from bare context declarations and printf/read mutations, and refuse trap/hash execution. Add regressions and safe/no-execution controls; document conservative refusals and remaining parser limits.
