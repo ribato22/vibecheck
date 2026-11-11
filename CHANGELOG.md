@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.10 (2026-11-11)
+
 - Close eight additional observed shell paths: refuse unresolved filename-pattern executables, refuse shell alias commands and environment-selected startup files, inspect literal zsh modifiers/repeat counts, and retain configuration uncertainty after Git config calls. Add regression/safe/no-execution controls and document conservative refusals.
 
 ## 1.2.9 (2026-11-05)
